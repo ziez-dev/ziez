@@ -1,10 +1,13 @@
 const std = @import("std");
 const http = std.http;
 const net = std.Io.net;
+const logging = @import("logging.zig");
 const Router = @import("router.zig").Router;
 const Request = @import("request.zig").Request;
 const Response = @import("response.zig").Response;
 const compression = @import("compression.zig");
+
+var next_request_id: std.atomic.Value(u64) = .init(1);
 
 pub fn listenAndServe(
     allocator: std.mem.Allocator,
@@ -12,21 +15,38 @@ pub fn listenAndServe(
     address: []const u8,
     router: *Router,
     compression_config: ?compression.CompressionConfig,
+    logger: logging.Logger,
 ) !void {
     const ip_addr = try net.IpAddress.parseLiteral(address);
     var server = try ip_addr.listen(io, .{});
     defer server.deinit(io);
 
-    std.debug.print("ziez: listening on {s}\n", .{address});
+    logger.infoFields(.{
+        .component = "listener",
+        .event = "server_listening",
+        .address = address,
+        .route_count = router.routes.items.len,
+        .middleware_count = router.mw.items.items.len,
+        .interceptor_count = router.global_interceptors.items.len,
+        .compression_enabled = compression_config != null,
+    }, "server listening");
 
     while (true) {
         const stream = server.accept(io) catch |e| {
-            std.debug.print("ziez: accept error: {}\n", .{e});
+            logger.errorFields(.{
+                .component = "listener",
+                .event = "accept_failed",
+                .@"error" = @errorName(e),
+            }, "accept failed");
             continue;
         };
 
-        spawnThread(allocator, stream, router, compression_config) catch |e| {
-            std.debug.print("ziez: thread spawn error: {}\n", .{e});
+        spawnThread(allocator, stream, router, compression_config, logger) catch |e| {
+            logger.errorFields(.{
+                .component = "listener",
+                .event = "thread_spawn_failed",
+                .@"error" = @errorName(e),
+            }, "thread spawn failed");
             stream.close(io);
             continue;
         };
@@ -38,8 +58,9 @@ fn spawnThread(
     stream: net.Stream,
     router: *Router,
     compression_config: ?compression.CompressionConfig,
+    logger: logging.Logger,
 ) !void {
-    _ = try std.Thread.spawn(.{}, handleConnection, .{ allocator, stream, router, compression_config });
+    _ = try std.Thread.spawn(.{}, handleConnection, .{ allocator, stream, router, compression_config, logger });
 }
 
 const MAX_BODY = 10 * 1024 * 1024; // 10MB
@@ -49,6 +70,7 @@ fn handleConnection(
     stream: net.Stream,
     router: *Router,
     compression_config: ?compression.CompressionConfig,
+    logger: logging.Logger,
 ) void {
     var threaded = std.Io.Threaded.init(allocator, .{});
     defer stream.close(threaded.io());
@@ -66,26 +88,54 @@ fn handleConnection(
     while (true) {
         var http_req = http_server.receiveHead() catch |e| {
             if (e != error.EndOfStream and e != error.HttpConnectionClosing) {
-                std.debug.print("ziez: receive head error: {}\n", .{e});
+                logger.errorFields(.{
+                    .component = "listener",
+                    .event = "receive_head_failed",
+                    .@"error" = @errorName(e),
+                }, "receive head failed");
             }
             return;
         };
 
         // Parse request metadata from head
         var req = Request.initFromHead(allocator, http_req.head_buffer) catch |e| {
-            std.debug.print("ziez: request parse error: {}\n", .{e});
+            logger.errorFields(.{
+                .component = "listener",
+                .event = "request_parse_failed",
+                .@"error" = @errorName(e),
+            }, "request parse failed");
             return;
         };
+        req.assignRequestId(next_request_id.fetchAdd(1, .monotonic));
+        const started_ns = monotonicTimeNs();
+
+        if (logger.lifecycleTraceEnabled()) {
+            logger.debugFields(.{
+                .component = "listener",
+                .event = "request_started",
+                .req_id = req.request_id,
+                .method = @tagName(req.method),
+                .path = req.path,
+            }, "request started");
+        }
 
         // Read body if present
         readBody(allocator, &http_req, &req) catch |e| {
-            std.debug.print("ziez: body read error: {}\n", .{e});
+            logger.errorFields(.{
+                .component = "listener",
+                .event = "body_read_failed",
+                .req_id = req.request_id,
+                .path = req.path,
+                .@"error" = @errorName(e),
+            }, "body read failed");
             // Continue without body - handler can still respond
         };
 
         var res = Response.init(allocator);
         res.server_request = &http_req;
         res.compression_config = compression_config;
+        res.logger = logger;
+        res.request_id = req.request_id;
 
         // Handle request with error recovery
         router.handle(&req, &res);
@@ -96,6 +146,24 @@ fn handleConnection(
         }
 
         // Cleanup request body allocation
+        if (logger.autoRequestLogEnabled()) {
+            var content_length: ?u64 = null;
+            if (req.header("content-length")) |raw| {
+                content_length = std.fmt.parseInt(u64, raw, 10) catch null;
+            }
+
+            const elapsed_ns = monotonicTimeNs() - started_ns;
+            logger.logRequestSummary(.{
+                .req_id = req.request_id,
+                .method = @tagName(req.method),
+                .path = req.path,
+                .status = res.status_code,
+                .response_time_ms = @as(f64, @floatFromInt(elapsed_ns)) / 1_000_000.0,
+                .user_agent = req.header("user-agent"),
+                .content_length = content_length,
+            });
+        }
+
         req.deinit();
 
         net_writer.interface.flush() catch return;
@@ -125,8 +193,7 @@ fn readBody(
         const remaining = content_length - total;
         const to_read: usize = @min(remaining, body_reader_buf.len);
         const chunk = body_reader.take(to_read) catch |e| {
-            std.debug.print("ziez: body read error: {}\n", .{e});
-            break;
+            return e;
         };
         if (chunk.len == 0) break;
         @memcpy(body_buf[total .. total + chunk.len], chunk);
@@ -135,4 +202,10 @@ fn readBody(
 
     req.body_raw = body_buf[0..total];
     req.owns_body = true;
+}
+
+fn monotonicTimeNs() i128 {
+    var ts: std.c.timespec = undefined;
+    if (std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts) != 0) return 0;
+    return @as(i128, @intCast(ts.sec)) * 1_000_000_000 + @as(i128, @intCast(ts.nsec));
 }

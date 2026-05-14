@@ -14,6 +14,13 @@ pub const Next = struct {
 pub const MiddlewareFn = *const fn (*Request, *Response, *Next) void;
 pub const HandlerFn = *const fn (*Request, *Response) anyerror!void;
 pub const ErrorHandlerFn = *const fn (*Request, *Response, anyerror) void;
+pub const TraceHook = *const fn (usize, *Request, *Response) void;
+
+pub const ExecutionTrace = struct {
+    enter: ?TraceHook = null,
+    exit: ?TraceHook = null,
+    short_circuit: ?TraceHook = null,
+};
 
 pub const MiddlewareList = struct {
     items: std.ArrayList(MiddlewareFn),
@@ -35,11 +42,19 @@ pub const MiddlewareList = struct {
     }
 
     pub fn execute(self: *const MiddlewareList, req: *Request, res: *Response) bool {
-        for (self.items.items) |mw| {
+        return self.executeWithTrace(req, res, .{});
+    }
+
+    pub fn executeWithTrace(self: *const MiddlewareList, req: *Request, res: *Response, trace: ExecutionTrace) bool {
+        for (self.items.items, 0..) |mw, index| {
+            if (trace.enter) |hook| hook(index, req, res);
             var next = Next{};
             mw(req, res, &next);
-            if (res.sent) return false;
-            if (!next.proceed) return false;
+            if (res.sent or !next.proceed) {
+                if (trace.short_circuit) |hook| hook(index, req, res);
+                return false;
+            }
+            if (trace.exit) |hook| hook(index, req, res);
         }
         return true;
     }

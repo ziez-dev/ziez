@@ -6,6 +6,7 @@ const multipart = @import("multipart.zig");
 pub const Request = struct {
     method: util.HttpMethod,
     path: []const u8,
+    request_id: []const u8 = "",
     query: util.QueryParams,
     params: util.Params,
     body_raw: []const u8,
@@ -13,6 +14,7 @@ pub const Request = struct {
     head_buffer: []const u8,
     owns_body: bool,
     owned_query_values: [util.QueryParams.MAX_ENTRIES]?[]const u8 = [_]?[]const u8{null} ** util.QueryParams.MAX_ENTRIES,
+    request_id_storage: [32]u8 = undefined,
     cookies: util.Cookies,
     cookies_parsed: bool,
 
@@ -34,6 +36,7 @@ pub const Request = struct {
             .query = util.parseQuery(split.query),
             .params = .{},
             .body_raw = "",
+            .request_id = "",
             .allocator = allocator,
             .head_buffer = head_buffer,
             .owns_body = false,
@@ -80,6 +83,15 @@ pub const Request = struct {
 
     pub fn param(self: *const Request, name: []const u8) ?[]const u8 {
         return self.params.get(name);
+    }
+
+    pub fn assignRequestId(self: *Request, next_id: u64) void {
+        if (self.header("x-request-id")) |existing| {
+            self.request_id = existing;
+            return;
+        }
+
+        self.request_id = std.fmt.bufPrint(&self.request_id_storage, "{x}", .{next_id}) catch "";
     }
 
     pub fn query_get(self: *const Request, key: []const u8) ?[]const u8 {

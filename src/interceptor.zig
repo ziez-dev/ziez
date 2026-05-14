@@ -34,6 +34,13 @@ pub const InterceptorCtx = struct {
 
 pub const InterceptorFn = *const fn (*InterceptorCtx) anyerror!void;
 
+pub const TraceHooks = struct {
+    enter: ?*const fn (usize, *Request, *Response) void = null,
+    exit: ?*const fn (usize, *Request, *Response) void = null,
+    handler_enter: ?*const fn (*Request, *Response) void = null,
+    handler_exit: ?*const fn (*Request, *Response) void = null,
+};
+
 // ---------------------------------------------------------------------------
 // Runtime interceptor chain (for global interceptors)
 // ---------------------------------------------------------------------------
@@ -42,6 +49,7 @@ pub const InterceptorChain = struct {
     interceptors: []const InterceptorFn,
     handler: middleware.HandlerFn,
     index: usize,
+    trace: TraceHooks = .{},
 
     pub fn init(
         interceptors: []const InterceptorFn,
@@ -57,12 +65,17 @@ pub const InterceptorChain = struct {
     /// Advance the chain: call the next interceptor or the final handler.
     pub fn next(self: *@This(), ctx: *InterceptorCtx) anyerror!void {
         if (self.index < self.interceptors.len) {
+            const current_index = self.index;
             const ic_fn = self.interceptors[self.index];
             self.index += 1;
             ctx._chain = self;
+            if (self.trace.enter) |hook| hook(current_index, ctx.req, ctx.res);
             try ic_fn(ctx);
+            if (self.trace.exit) |hook| hook(current_index, ctx.req, ctx.res);
         } else {
+            if (self.trace.handler_enter) |hook| hook(ctx.req, ctx.res);
             try self.handler(ctx.req, ctx.res);
+            if (self.trace.handler_exit) |hook| hook(ctx.req, ctx.res);
         }
     }
 };

@@ -1,7 +1,9 @@
 const std = @import("std");
 const http = std.http;
 const compression = @import("compression.zig");
+const logging = @import("logging.zig");
 const util = @import("util.zig");
+const log = std.log.scoped(.ziez);
 
 pub const Response = struct {
     status_code: u16 = 200,
@@ -14,6 +16,8 @@ pub const Response = struct {
     error_message: ?[]const u8 = null,
     compression_config: ?compression.CompressionConfig = null,
     template_engine: ?*@import("template.zig").TemplateEngine = null,
+    logger: ?logging.Logger = null,
+    request_id: []const u8 = "",
 
     const MAX_HEADERS = 32;
     const MAX_HEADER_VALUE = 2048;
@@ -34,6 +38,8 @@ pub const Response = struct {
         self.sent = false;
         self.server_request = null;
         self.template_engine = null;
+        self.logger = null;
+        self.request_id = "";
     }
 
     pub fn status(self: *Response, code: u16) *Response {
@@ -156,7 +162,7 @@ pub const Response = struct {
 
     pub fn json(self: *Response, data: anytype) void {
         const body = std.json.Stringify.valueAlloc(self.allocator, data, .{}) catch |e| {
-            std.debug.print("ziez: json stringify error: {}\n", .{e});
+            self.logError("response", "json_stringify_failed", e);
             self.status(500).sendBody("{\"error\":\"json stringify failed\"}");
             return;
         };
@@ -169,7 +175,7 @@ pub const Response = struct {
     /// transforms, computed fields, groups, etc.
     pub fn serialize(self: *Response, data: anytype, comptime config: anytype) void {
         const body = @import("serializer.zig").serialize(self.allocator, data, config) catch |e| {
-            std.debug.print("ziez: serialize error: {}\n", .{e});
+            self.logError("response", "serialize_failed", e);
             self.status(500).sendBody("{\"error\":\"serialization failed\"}");
             return;
         };
@@ -181,7 +187,7 @@ pub const Response = struct {
     /// Serialize a slice/array of items with a SerializerConfig.
     pub fn serializeMany(self: *Response, items: anytype, comptime config: anytype) void {
         const body = @import("serializer.zig").serializeMany(self.allocator, items, config) catch |e| {
-            std.debug.print("ziez: serialize error: {}\n", .{e});
+            self.logError("response", "serialize_many_failed", e);
             self.status(500).sendBody("{\"error\":\"serialization failed\"}");
             return;
         };
@@ -197,13 +203,13 @@ pub const Response = struct {
 
     pub fn render(self: *Response, view: []const u8, context: anytype) void {
         const engine = self.template_engine orelse {
-            std.debug.print("ziez: render failed, no template engine configured\n", .{});
+            self.logMessage(.@"error", "response", "template_engine_missing", "render failed");
             self.status(500).sendBody("{\"error\":\"template engine not configured\"}");
             return;
         };
 
         const result = engine.renderAlloc(self.allocator, view, context) catch |e| {
-            std.debug.print("ziez: render error: {}\n", .{e});
+            self.logError("response", "render_failed", e);
             self.status(500).sendBody("{\"error\":\"template rendering failed\"}");
             return;
         };
@@ -300,7 +306,7 @@ pub const Response = struct {
             .extra_headers = extra_headers[0..self.headers_len],
             .keep_alive = false,
         }) catch |e| {
-            std.debug.print("ziez: respond error: {}\n", .{e});
+            self.logError("response", "respond_uncompressed_failed", e);
         };
     }
 
@@ -315,7 +321,48 @@ pub const Response = struct {
             .extra_headers = extra_headers[0..self.headers_len],
             .keep_alive = false,
         }) catch |e| {
-            std.debug.print("ziez: respond error: {}\n", .{e});
+            self.logError("response", "respond_compressed_failed", e);
         };
+    }
+
+    fn logError(self: *const Response, component: []const u8, event: []const u8, err: anyerror) void {
+        if (self.logger) |logger| {
+            logger.errorFields(.{
+                .component = component,
+                .event = event,
+                .req_id = self.request_id,
+                .@"error" = @errorName(err),
+            }, "response error");
+            return;
+        }
+
+        log.err("{s} error: {s}", .{ component, @errorName(err) });
+    }
+
+    fn logMessage(
+        self: *const Response,
+        level: logging.LogLevel,
+        component: []const u8,
+        event: []const u8,
+        msg: []const u8,
+    ) void {
+        if (self.logger) |logger| {
+            switch (level) {
+                .trace => logger.traceFields(.{ .component = component, .event = event, .req_id = self.request_id }, msg),
+                .debug => logger.debugFields(.{ .component = component, .event = event, .req_id = self.request_id }, msg),
+                .info => logger.infoFields(.{ .component = component, .event = event, .req_id = self.request_id }, msg),
+                .warn => logger.warnFields(.{ .component = component, .event = event, .req_id = self.request_id }, msg),
+                .@"error" => logger.errorFields(.{ .component = component, .event = event, .req_id = self.request_id }, msg),
+                .fatal => logger.fatalFields(.{ .component = component, .event = event, .req_id = self.request_id }, msg),
+            }
+            return;
+        }
+
+        switch (level) {
+            .trace, .debug => log.debug("{s}: {s}", .{ component, msg }),
+            .info => log.info("{s}: {s}", .{ component, msg }),
+            .warn => log.warn("{s}: {s}", .{ component, msg }),
+            .@"error", .fatal => log.err("{s}: {s}", .{ component, msg }),
+        }
     }
 };

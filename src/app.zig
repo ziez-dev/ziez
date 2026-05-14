@@ -3,18 +3,22 @@ const middleware = @import("middleware.zig");
 const interceptor = @import("interceptor.zig");
 const compression = @import("compression.zig");
 const cors_mod = @import("cors.zig");
+const log_mod = @import("logging.zig");
 const security_mod = @import("security.zig");
 const Router = @import("router.zig").Router;
 const listener = @import("listener.zig");
 
 pub const App = struct {
     router: Router,
+    logger: log_mod.Logger,
     allocator: std.mem.Allocator,
     compression_config: ?compression.CompressionConfig = null,
 
     pub fn init(allocator: std.mem.Allocator) App {
+        const router = Router.init(allocator);
         return .{
-            .router = Router.init(allocator),
+            .router = router,
+            .logger = router.logger,
             .allocator = allocator,
         };
     }
@@ -24,7 +28,7 @@ pub const App = struct {
     }
 
     pub fn listen(self: *App, io: std.Io, address: []const u8) !void {
-        try listener.listenAndServe(self.allocator, io, address, &self.router, self.compression_config);
+        try listener.listenAndServe(self.allocator, io, address, &self.router, self.compression_config, self.logger);
     }
 
     pub fn get(self: *App, pattern: []const u8, handler: middleware.HandlerFn) void {
@@ -67,6 +71,11 @@ pub const App = struct {
     /// Enable response compression with optional config.
     pub fn compress(self: *App, config: compression.CompressionConfig) void {
         self.compression_config = config;
+    }
+
+    pub fn logging(self: *App, config: log_mod.LoggerConfig) void {
+        self.logger.configure(config);
+        self.router.logger = self.logger;
     }
 
     /// Enable global CORS handling.
