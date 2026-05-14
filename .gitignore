@@ -1,0 +1,19 @@
+# Build outputs
+zig-out/
+zig-pkg/
+.zig-cache/
+
+# IDE
+.vscode/
+.idea/
+
+# Claude Code
+.claude/
+
+# Agents
+.agents/
+.codex/
+
+# OS
+.DS_Store
+Thumbs.db

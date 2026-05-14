@@ -1,0 +1,18 @@
+.{
+    .fingerprint = 0xca9a688b1ab47dcc,
+    .name = .ziez,
+    .version = "0.1.0",
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        .brotli = .{
+            .url = "git+https://github.com/google/brotli?ref=master#440e03642b891968a76b6d088d70f01f06e0c349",
+            .hash = "N-V-__8AAI2b6QPVus14oqoaXFGvvUMDwBA0vE-y0XaApMDn",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "include",
+        "src",
+    },
+}
