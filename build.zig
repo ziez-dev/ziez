@@ -1,7 +1,10 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 pub fn build(b: *std.Build) void {
-    const target = b.standardTargetOptions(.{});
+    const target = b.standardTargetOptions(.{
+        .default_target = if (builtin.os.tag == .linux) .{ .abi = .musl } else .{},
+    });
     const optimize = b.standardOptimizeOption(.{});
 
     // --- Brotli C library ---
@@ -46,6 +49,64 @@ pub fn build(b: *std.Build) void {
 
     b.installArtifact(brotli_lib);
 
+    const pcre2_source_root = b.path("include/pcre2");
+    const pcre2_generated_headers = b.addWriteFiles();
+    const pcre2_include = pcre2_generated_headers.getDirectory();
+    _ = pcre2_generated_headers.addCopyFile(pcre2_source_root.path(b, "pcre2.h.generic"), "pcre2.h");
+    _ = pcre2_generated_headers.addCopyFile(pcre2_source_root.path(b, "config.h.generic"), "config.h");
+    const pcre2_chartables = pcre2_generated_headers.addCopyFile(pcre2_source_root.path(b, "pcre2_chartables.c.dist"), "pcre2_chartables.c");
+    const pcre2_root_module = b.createModule(.{
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+        .sanitize_c = .off,
+    });
+    const pcre2_lib = b.addLibrary(.{
+        .name = "pcre2_8",
+        .root_module = pcre2_root_module,
+    });
+    pcre2_lib.root_module.addIncludePath(pcre2_include);
+    pcre2_lib.root_module.addIncludePath(pcre2_source_root);
+    pcre2_lib.root_module.addCMacro("HAVE_CONFIG_H", "1");
+    pcre2_lib.root_module.addCMacro("PCRE2_CODE_UNIT_WIDTH", "8");
+    pcre2_lib.root_module.addCMacro("PCRE2_STATIC", "1");
+    pcre2_lib.root_module.addCMacro("SUPPORT_UNICODE", "1");
+    pcre2_lib.root_module.addCMacro("SUPPORT_PCRE2_8", "1");
+    pcre2_lib.root_module.addCSourceFiles(.{
+        .root = pcre2_source_root,
+        .files = &.{
+            "pcre2_auto_possess.c",
+            "pcre2_chkdint.c",
+            "pcre2_compile.c",
+            "pcre2_compile_class.c",
+            "pcre2_config.c",
+            "pcre2_context.c",
+            "pcre2_convert.c",
+            "pcre2_dfa_match.c",
+            "pcre2_error.c",
+            "pcre2_extuni.c",
+            "pcre2_find_bracket.c",
+            "pcre2_maketables.c",
+            "pcre2_match.c",
+            "pcre2_match_data.c",
+            "pcre2_newline.c",
+            "pcre2_ord2utf.c",
+            "pcre2_pattern_info.c",
+            "pcre2_script_run.c",
+            "pcre2_serialize.c",
+            "pcre2_string_utils.c",
+            "pcre2_study.c",
+            "pcre2_substitute.c",
+            "pcre2_substring.c",
+            "pcre2_tables.c",
+            "pcre2_ucd.c",
+            "pcre2_valid_utf.c",
+            "pcre2_xclass.c",
+        },
+    });
+    pcre2_lib.root_module.addCSourceFile(.{ .file = pcre2_chartables });
+    b.installArtifact(pcre2_lib);
+
     const brotli_translate = b.addTranslateC(.{
         .root_source_file = b.path("include/brotli_c.h"),
         .target = target,
@@ -66,8 +127,10 @@ pub fn build(b: *std.Build) void {
             .{ .name = "brotli_c", .module = brotli_c_mod },
         },
     });
-    ziez_mod.linkSystemLibrary("pcre2-8", .{});
+    ziez_mod.addIncludePath(pcre2_include);
+    ziez_mod.addIncludePath(pcre2_source_root);
     ziez_mod.linkLibrary(brotli_lib);
+    ziez_mod.linkLibrary(pcre2_lib);
 
     const lib_mod = b.createModule(.{
         .root_source_file = b.path("src/root.zig"),
@@ -80,8 +143,10 @@ pub fn build(b: *std.Build) void {
         .root_module = lib_mod,
     });
     lib.root_module.addImport("brotli_c", brotli_c_mod);
-    lib.root_module.linkSystemLibrary("pcre2-8", .{});
+    lib.root_module.addIncludePath(pcre2_include);
+    lib.root_module.addIncludePath(pcre2_source_root);
     lib.root_module.linkLibrary(brotli_lib);
+    lib.root_module.linkLibrary(pcre2_lib);
     b.installArtifact(lib);
 
     const exe_mod = b.createModule(.{
