@@ -17,6 +17,14 @@ pub const Request = struct {
     request_id_storage: [32]u8 = undefined,
     cookies: util.Cookies,
     cookies_parsed: bool,
+    /// True if the connection is TLS-encrypted.
+    tls: bool = false,
+    /// Negotiated TLS version string (e.g., "TLSv1.3").
+    tls_version: ?[]const u8 = null,
+    /// Client certificate subject (mTLS).
+    client_cert_subject: ?[]const u8 = null,
+    /// Client certificate SHA-256 fingerprint (mTLS).
+    client_cert_fingerprint: ?[32]u8 = null,
 
     pub fn initFromHead(
         allocator: std.mem.Allocator,
@@ -146,5 +154,14 @@ pub const Request = struct {
     pub fn signedCookie(self: *Request, name: []const u8, secret: []const u8) ?[]const u8 {
         const raw = self.cookie(name) orelse return null;
         return util.verifySignedCookie(self.allocator, raw, secret);
+    }
+
+    /// Returns true if the connection is TLS-encrypted.
+    pub fn isSecure(self: *const Request) bool {
+        return self.tls;
+    }
+
+    pub fn scheme(self: *const Request) []const u8 {
+        return if (self.tls) "https" else "http";
     }
 };

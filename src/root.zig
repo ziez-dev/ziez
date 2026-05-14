@@ -79,6 +79,15 @@ pub const LogSink = @import("logging.zig").Sink;
 pub const UAParser = @import("ua_parser.zig");
 pub const ua_parser = @import("ua_parser.zig");
 
+pub const tls = @import("tls.zig");
+pub const TlsConfig = tls.TlsConfig;
+pub const TlsContext = tls.TlsContext;
+pub const TlsVersion = tls.TlsVersion;
+pub const ClientAuth = tls.ClientAuth;
+pub const CipherSuite = tls.CipherSuite;
+pub const ClientCertInfo = tls.ClientCertInfo;
+pub const RedirectHttpConfig = tls.RedirectHttpConfig;
+
 pub fn init(allocator: std.mem.Allocator) App {
     return App.init(allocator);
 }

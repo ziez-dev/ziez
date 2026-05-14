@@ -5,6 +5,7 @@ const compression = @import("compression.zig");
 const cors_mod = @import("cors.zig");
 const log_mod = @import("logging.zig");
 const security_mod = @import("security.zig");
+const tls_mod = @import("tls.zig");
 const Router = @import("router.zig").Router;
 const listener = @import("listener.zig");
 
@@ -13,6 +14,9 @@ pub const App = struct {
     logger: log_mod.Logger,
     allocator: std.mem.Allocator,
     compression_config: ?compression.CompressionConfig = null,
+    tls_config: ?tls_mod.TlsConfig = null,
+    tls_runtime: ?*tls_mod.TlsRuntime = null,
+    redirect_http_config: ?tls_mod.RedirectHttpConfig = null,
 
     pub fn init(allocator: std.mem.Allocator) App {
         const router = Router.init(allocator);
@@ -24,11 +28,41 @@ pub const App = struct {
     }
 
     pub fn deinit(self: *App) void {
+        if (self.tls_runtime) |runtime| {
+            runtime.destroy();
+            self.tls_runtime = null;
+        }
         self.router.deinit();
     }
 
     pub fn listen(self: *App, io: std.Io, address: []const u8) !void {
-        try listener.listenAndServe(self.allocator, io, address, &self.router, self.compression_config, self.logger);
+        if (self.tls_config) |config| {
+            if (self.tls_runtime == null) {
+                self.tls_runtime = try tls_mod.TlsRuntime.create(self.allocator, config);
+            }
+            try listener.listenAndServe(
+                self.allocator,
+                io,
+                address,
+                &self.router,
+                self.compression_config,
+                self.logger,
+                self.tls_runtime,
+                self.redirect_http_config,
+            );
+        } else {
+            if (self.redirect_http_config != null) return error.TlsRequiredForRedirect;
+            try listener.listenAndServe(
+                self.allocator,
+                io,
+                address,
+                &self.router,
+                self.compression_config,
+                self.logger,
+                null,
+                null,
+            );
+        }
     }
 
     pub fn get(self: *App, pattern: []const u8, handler: middleware.HandlerFn) void {
@@ -71,6 +105,26 @@ pub const App = struct {
     /// Enable response compression with optional config.
     pub fn compress(self: *App, config: compression.CompressionConfig) void {
         self.compression_config = config;
+    }
+
+    /// Enable HTTPS/TLS with the given configuration.
+    pub fn tls(self: *App, config: tls_mod.TlsConfig) void {
+        self.tls_config = config;
+    }
+
+    pub fn redirectHttp(self: *App, config: tls_mod.RedirectHttpConfig) void {
+        self.redirect_http_config = config;
+    }
+
+    pub fn reloadTls(self: *App, config: tls_mod.TlsConfig) !void {
+        self.tls_config = config;
+        if (self.tls_runtime) |runtime| {
+            try runtime.reload(config);
+            self.logger.infoFields(.{
+                .component = "tls",
+                .event = "context_reloaded",
+            }, "TLS context reloaded");
+        }
     }
 
     pub fn logging(self: *App, config: log_mod.LoggerConfig) void {
