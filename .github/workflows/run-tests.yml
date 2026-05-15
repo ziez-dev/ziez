@@ -164,6 +164,7 @@ jobs:
           release: "14.2"
           architecture: ${{ matrix.arch }}
           prepare: |
+            export IGNORE_OSVERSION=yes
             pkg update
             pkg install -y git cmake ninja llvm18 zstd libxml2 ca_root_nss lang/zig
           run: |
