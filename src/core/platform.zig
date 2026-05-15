@@ -27,7 +27,7 @@ pub fn statFile(file: std.Io.File, io: std.Io) !FileStat {
     }
     const st = try file.stat(io);
     return .{
-        .mtime_ns = @intCast(st.mtime.nanoseconds),
+        .mtime_ns = st.mtime.sec * std.time.ns_per_s + st.mtime.nsec,
         .size = st.size,
         .is_dir = st.kind == .directory,
     };

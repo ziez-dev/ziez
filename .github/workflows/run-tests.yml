@@ -164,8 +164,9 @@ jobs:
           release: ${{ matrix.release }}
           usesh: true
           prepare: |
-            pkg install -y zig
+            pkg install -y zig ca_root_nss
           run: |
+            git config --global http.sslCAInfo /usr/local/share/certs/ca-root-nss.crt
             zig build test --summary all
             zig build
 
