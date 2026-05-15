@@ -90,8 +90,7 @@ jobs:
       - name: Install GNU tar (Alpine)
         if: matrix.distro == 'alpine'
         run: |
-          apk add --no-cache tar
-          ln -sf /usr/bin/tar /bin/tar
+          apk add --no-cache --overwrite /bin/tar tar
 
       - name: Install Zig
         uses: mlugg/setup-zig@v2
