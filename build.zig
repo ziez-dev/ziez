@@ -417,6 +417,25 @@ pub fn build(b: *std.Build) void {
             test_ua_step.dependOn(&run_unit_test.step);
         }
     }
+
+    // Integration tests
+    const integration_step = b.step("integration", "Run integration tests");
+    const integration_mod = b.createModule(.{
+        .root_source_file = b.path("tests/integrations/basic.test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "ziez", .module = ziez_mod },
+            .{ .name = "ziez_options", .module = options_mod },
+        },
+    });
+
+    const integration_test = b.addTest(.{
+        .root_module = integration_mod,
+    });
+
+    const run_integration = b.addRunArtifact(integration_test);
+    integration_step.dependOn(&run_integration.step);
 }
 
 fn getCSources(arena: std.mem.Allocator, parent: std.Build.Cache.Directory, io: std.Io, dir_path: []const u8, allocator: std.mem.Allocator) [][]const u8 {
