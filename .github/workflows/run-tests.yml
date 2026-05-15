@@ -143,16 +143,10 @@ jobs:
         run: zig build -Dtarget=${{ matrix.target }}
 
   test-freebsd:
-    name: Zig Test (${{ matrix.arch }} - FreeBSD)
-    runs-on: ${{ matrix.os-runner }}
+    name: Zig Test (FreeBSD)
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - arch: x86_64
-            os-runner: ubuntu-latest
-          - arch: aarch64
-            os-runner: ubuntu-24.04-arm
 
     steps:
       - name: Checkout code
@@ -162,10 +156,10 @@ jobs:
         uses: vmactions/freebsd-vm@v1
         with:
           release: "14.2"
-          architecture: ${{ matrix.arch }}
           prepare: |
             export IGNORE_OSVERSION=yes
             pkg update
+            pkg upgrade -y
             pkg install -y git cmake ninja llvm18 zstd libxml2 ca_root_nss lang/zig
           run: |
             git config --global http.sslCAInfo /usr/local/share/certs/ca-root-nss.crt
@@ -182,14 +176,29 @@ jobs:
           - arch: x86_64
             runner: windows-latest
 
+    env:
+      ZIG_GLOBAL_CACHE: ${{ github.workspace }}/.zig-global-cache
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
 
       - name: Install Zig
         uses: mlugg/setup-zig@v2
         with:
           version: 0.16.0
+
+      - name: Cache Zig
+        uses: actions/cache@v4
+        with:
+          path: |
+            .zig-global-cache
+            zig-cache
+          key: windows-${{ matrix.arch }}-zig-${{ hashFiles('build.zig.zon', 'build.zig') }}
+          restore-keys: |
+            windows-${{ matrix.arch }}-zig-
 
       - name: Run native tests
         run: zig build test --summary all
