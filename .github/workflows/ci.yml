@@ -31,6 +31,12 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Install Debian bootstrap dependencies
+        if: matrix.distro == 'debian'
+        run: |
+          apt-get update
+          apt-get install -y xz-utils libc-dev
+
       - name: Install Zig
         uses: mlugg/setup-zig@v2
         with:
@@ -93,12 +99,6 @@ jobs:
           key: ${{ runner.os }}-zig-${{ hashFiles('**/*.zig') }}
           restore-keys: |
             ${{ runner.os }}-zig-
-
-      - name: Install dependencies (Debian)
-        if: matrix.distro == 'debian'
-        run: |
-          apt-get update
-          apt-get install -y libc-dev xz-utils
 
       - name: Install dependencies (Fedora)
         if: matrix.distro == 'fedora'
