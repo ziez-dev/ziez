@@ -87,6 +87,12 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Install GNU tar (Alpine)
+        if: matrix.distro == 'alpine'
+        run: |
+          apk add --no-cache tar
+          ln -sf /usr/bin/tar /bin/tar
+
       - name: Install Zig
         uses: mlugg/setup-zig@v2
         with:
