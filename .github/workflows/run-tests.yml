@@ -1,4 +1,4 @@
-name: CI
+name: Run Tests
 
 on:
   push:
@@ -90,7 +90,7 @@ jobs:
       - name: Install GNU tar (Alpine)
         if: matrix.distro == 'alpine'
         run: |
-          apk add --no-cache --overwrite /bin/tar tar
+          rm /bin/tar && apk add --no-cache tar
 
       - name: Install Zig
         uses: mlugg/setup-zig@v2
