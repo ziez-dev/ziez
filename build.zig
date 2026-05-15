@@ -70,6 +70,7 @@ pub fn build(b: *std.Build) void {
             .linux => lib.root_module.addCMacro("OS_LINUX", "1"),
             .freebsd => lib.root_module.addCMacro("OS_FREEBSD", "1"),
             .macos => lib.root_module.addCMacro("OS_MACOSX", "1"),
+            .windows => lib.root_module.addCMacro("OS_WINDOWS", "1"),
             else => {},
         }
 

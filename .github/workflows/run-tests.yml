@@ -119,6 +119,10 @@ jobs:
           - aarch64-linux-gnu
           - x86_64-macos-none
           - aarch64-macos-none
+          - x86_64-windows-gnu
+          - aarch64-windows-gnu
+          - x86_64-freebsd
+          - aarch64-freebsd
 
     steps:
       - name: Checkout code
@@ -137,3 +141,57 @@ jobs:
 
       - name: Cross-compile build
         run: zig build -Dtarget=${{ matrix.target }}
+
+  test-freebsd:
+    name: Test on freebsd ${{ matrix.arch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            release: "14.2"
+          - arch: aarch64
+            release: "14.2"
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run tests in FreeBSD VM
+        uses: vmactions/freebsd-vm@v1
+        with:
+          release: ${{ matrix.release }}
+          usesh: true
+          prepare: |
+            pkg install -y zig
+          run: |
+            zig build test --summary all
+            zig build
+
+  test-windows:
+    name: Test on windows ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: windows-latest
+          - arch: aarch64
+            runner: windows-11-arm
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Run native tests
+        run: zig build test --summary all
+
+      - name: Build examples
+        run: zig build
