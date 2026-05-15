@@ -20,6 +20,9 @@ jobs:
           - os: linux
             distro: ubuntu-latest
             runner: ubuntu-latest
+          - os: linux
+            distro: debian
+            runner: ubuntu-latest
           - os: macos
             distro: x64
             runner: macos-latest
@@ -30,12 +33,6 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-
-      - name: Install Debian bootstrap dependencies
-        if: matrix.distro == 'debian'
-        run: |
-          apt-get update
-          apt-get install -y xz-utils libc-dev
 
       - name: Install Zig
         uses: mlugg/setup-zig@v2
@@ -52,7 +49,7 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-zig-
 
-      - name: Install dependencies (Ubuntu)
+      - name: Install dependencies (Ubuntu/Debian)
         if: matrix.os == 'linux'
         run: |
           sudo apt-get update
@@ -80,10 +77,17 @@ jobs:
             container: archlinux/archlinux:latest
           - distro: alpine
             container: alpine:latest
+          - distro: aws
+            container: amazonlinux:2023
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      - name: Bootstrap AWS Linux
+        if: matrix.distro == 'aws'
+        run: |
+          dnf install -y xz
 
       - name: Install Zig
         uses: mlugg/setup-zig@v2
@@ -114,6 +118,11 @@ jobs:
         if: matrix.distro == 'alpine'
         run: |
           apk add --no-cache musl-dev build-base gcc
+
+      - name: Install dependencies (AWS)
+        if: matrix.distro == 'aws'
+        run: |
+          dnf install -y glibc-devel gcc
 
       - name: Run native tests
         run: zig build test --summary all
