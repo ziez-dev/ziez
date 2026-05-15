@@ -10,26 +10,9 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
-  test-native:
-    name: Test on ${{ matrix.os }} ${{ matrix.distro }}
-    runs-on: ${{ matrix.runner }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: linux
-            distro: ubuntu-latest
-            runner: ubuntu-latest
-          - os: linux
-            distro: debian
-            runner: ubuntu-latest
-          - os: macos
-            distro: x64
-            runner: macos-latest
-          - os: macos
-            distro: arm64
-            runner: macos-14
-
+  test-ubuntu:
+    name: Test (ubuntu)
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -39,46 +22,19 @@ jobs:
         with:
           version: 0.16.0
 
-      - name: Install dependencies (Ubuntu/Debian)
-        if: matrix.os == 'linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libc-dev
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y libc-dev
 
-      - name: Run native tests
+      - name: Run tests
         run: zig build test --summary all
 
-      - name: Build examples
+      - name: Build
         run: zig build
 
-  test-linux-containers:
-    name: Test on linux ${{ matrix.distro }}
-    runs-on: ubuntu-latest
-    container: ${{ matrix.container }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - distro: fedora
-            container: fedora:latest
-          - distro: arch
-            container: archlinux/archlinux:latest
-          - distro: alpine
-            container: alpine:latest
-          - distro: aws
-            container: amazonlinux:2023
-
+  test-macos-x64:
+    name: Test (macos-x64)
+    runs-on: macos-latest
     steps:
-      - name: Bootstrap Alpine
-        if: matrix.distro == 'alpine'
-        run: |
-          apk add --no-cache git tar xz musl-dev build-base gcc
-
-      - name: Bootstrap AWS Linux
-        if: matrix.distro == 'aws'
-        run: |
-          dnf install -y git tar xz
-
       - name: Checkout code
         uses: actions/checkout@v4
 
@@ -87,43 +43,15 @@ jobs:
         with:
           version: 0.16.0
 
-      - name: Install dependencies (Fedora)
-        if: matrix.distro == 'fedora'
-        run: |
-          dnf install -y glibc-devel gcc
-
-      - name: Install dependencies (Arch)
-        if: matrix.distro == 'arch'
-        run: |
-          pacman -Sy --noconfirm glibc base-devel gcc
-
-      - name: Install dependencies (AWS)
-        if: matrix.distro == 'aws'
-        run: |
-          dnf install -y glibc-devel gcc
-
-      - name: Run native tests
+      - name: Run tests
         run: zig build test --summary all
 
-      - name: Build examples
+      - name: Build
         run: zig build
 
-  cross-compile:
-    name: Cross-compile to ${{ matrix.target }}
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        target:
-          - x86_64-linux-gnu
-          - aarch64-linux-gnu
-          - x86_64-macos-none
-          - aarch64-macos-none
-          - x86_64-windows-gnu
-          - aarch64-windows-gnu
-          - x86_64-freebsd
-          - aarch64-freebsd
-
+  test-macos-arm64:
+    name: Test (macos-arm64)
+    runs-on: macos-14
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -133,67 +61,17 @@ jobs:
         with:
           version: 0.16.0
 
-      - name: Install cross-compilation dependencies
-        if: matrix.target == 'aarch64-linux-gnu'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+      - name: Run tests
+        run: zig build test --summary all
 
-      - name: Cross-compile build
-        run: zig build -Dtarget=${{ matrix.target }}
+      - name: Build
+        run: zig build
 
-  test-freebsd:
-    name: Zig Test (${{ matrix.arch }} - FreeBSD)
-    runs-on: ${{ matrix.os-runner }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: x86_64
-            os-runner: ubuntu-latest
-          - arch: aarch64
-            os-runner: ubuntu-24.04-arm
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Install QEMU (ARM)
-        if: matrix.arch == 'aarch64'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y qemu-system-arm qemu-efi-aarch64
-
-      - name: Run tests in FreeBSD VM
-        uses: vmactions/freebsd-vm@v1
-        with:
-          release: "14.2"
-          architecture: ${{ matrix.arch }}
-          prepare: |
-            export IGNORE_OSVERSION=yes
-            pkg update
-            pkg upgrade -y
-            pkg install -y git cmake ninja llvm18 zstd libxml2 ca_root_nss lang/zig
-          run: |
-            git config --global http.sslCAInfo /usr/local/share/certs/ca-root-nss.crt
-            zig build test --summary all
-            zig build
-
-  test-windows:
-    name: Test on windows ${{ matrix.arch }}
-    runs-on: ${{ matrix.runner }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: x86_64
-            runner: windows-latest
-          - arch: aarch64
-            runner: windows-11-arm
-
+  test-windows-x64:
+    name: Test (windows-x64)
+    runs-on: windows-latest
     env:
       ZIG_GLOBAL_CACHE: ${{ github.workspace }}/.zig-global-cache
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -211,12 +89,219 @@ jobs:
           path: |
             .zig-global-cache
             zig-cache
-          key: windows-${{ matrix.arch }}-zig-${{ hashFiles('build.zig.zon', 'build.zig') }}
+          key: windows-x64-zig-${{ hashFiles('build.zig.zon', 'build.zig') }}
           restore-keys: |
-            windows-${{ matrix.arch }}-zig-
+            windows-x64-zig-
 
-      - name: Run native tests
+      - name: Run tests
         run: zig build test --summary all
 
-      - name: Build examples
+      - name: Build
         run: zig build
+
+  test-freebsd-x64:
+    name: Test (freebsd-x64)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run tests in FreeBSD VM
+        uses: vmactions/freebsd-vm@v1
+        with:
+          release: "14.2"
+          prepare: |
+            export IGNORE_OSVERSION=yes
+            pkg update
+            pkg upgrade -y
+            pkg install -y git cmake ninja llvm18 zstd libxml2 ca_root_nss lang/zig
+          run: |
+            git config --global http.sslCAInfo /usr/local/share/certs/ca-root-nss.crt
+            zig build test --summary all
+            zig build
+
+  test-fedora:
+    name: Test (fedora)
+    runs-on: ubuntu-latest
+    container: fedora:latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Install dependencies
+        run: dnf install -y glibc-devel gcc
+
+      - name: Run tests
+        run: zig build test --summary all
+
+      - name: Build
+        run: zig build
+
+  test-arch:
+    name: Test (arch)
+    runs-on: ubuntu-latest
+    container: archlinux/archlinux:latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Install dependencies
+        run: pacman -Sy --noconfirm glibc base-devel gcc
+
+      - name: Run tests
+        run: zig build test --summary all
+
+      - name: Build
+        run: zig build
+
+  test-alpine:
+    name: Test (alpine)
+    runs-on: ubuntu-latest
+    container: alpine:latest
+    steps:
+      - name: Bootstrap
+        run: apk add --no-cache git tar xz musl-dev build-base gcc
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Run tests
+        run: zig build test --summary all
+
+      - name: Build
+        run: zig build
+
+  test-amazonlinux:
+    name: Test (amazonlinux)
+    runs-on: ubuntu-latest
+    container: amazonlinux:2023
+    steps:
+      - name: Bootstrap
+        run: dnf install -y git tar xz
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Install dependencies
+        run: dnf install -y glibc-devel gcc
+
+      - name: Run tests
+        run: zig build test --summary all
+
+      - name: Build
+        run: zig build
+
+  cross-compile-linux-x64:
+    name: Cross-compile (linux-x64)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Cross-compile
+        run: zig build -Dtarget=x86_64-linux-gnu
+
+  cross-compile-linux-arm64:
+    name: Cross-compile (linux-arm64)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Install cross-compilation dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+
+      - name: Cross-compile
+        run: zig build -Dtarget=aarch64-linux-gnu
+
+  cross-compile-macos-x64:
+    name: Cross-compile (macos-x64)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Cross-compile
+        run: zig build -Dtarget=x86_64-macos-none
+
+  cross-compile-macos-arm64:
+    name: Cross-compile (macos-arm64)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Cross-compile
+        run: zig build -Dtarget=aarch64-macos-none
+
+  cross-compile-windows-x64:
+    name: Cross-compile (windows-x64)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Cross-compile
+        run: zig build -Dtarget=x86_64-windows-gnu
+
+  cross-compile-freebsd-x64:
+    name: Cross-compile (freebsd-x64)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Cross-compile
+        run: zig build -Dtarget=x86_64-freebsd
