@@ -7,6 +7,8 @@ pub const FileStat = struct {
     is_dir: bool,
 };
 
+const buffered_read_chunk_size = if (builtin.os.tag == .windows) 64 * 1024 else 8 * 1024;
+
 pub fn openFileReadOnly(io: std.Io, path: []const u8) !std.Io.File {
     return std.Io.Dir.cwd().openFile(io, path, .{ .mode = .read_only });
 }
@@ -34,23 +36,35 @@ pub fn statFile(file: std.Io.File, io: std.Io) !FileStat {
 }
 
 pub fn readFileAll(allocator: std.mem.Allocator, file: std.Io.File, io: std.Io, max: usize) ![]u8 {
+    if (file.length(io)) |len_u64| {
+        const want_u64 = @min(len_u64, max);
+        const want: usize = @intCast(want_u64);
+        const buf = try allocator.alloc(u8, want);
+        errdefer allocator.free(buf);
+
+        const n = try file.readPositionalAll(io, buf, 0);
+        if (n == buf.len) return buf;
+        return allocator.realloc(buf, n);
+    } else |err| switch (err) {
+        error.Streaming => {},
+        else => return err,
+    }
+
     var list = std.ArrayList(u8).empty;
     errdefer list.deinit(allocator);
-    var pos: u64 = 0;
-    while (list.items.len < max) {
-        const remaining = max - list.items.len;
-        const want = @min(remaining, 8192);
-        var tmp: [8192]u8 = undefined;
-        const n = try file.readPositionalAll(io, tmp[0..want], pos);
-        if (n == 0) break;
-        try list.appendSlice(allocator, tmp[0..n]);
-        pos += n;
-    }
+
+    var read_buf: [buffered_read_chunk_size]u8 = undefined;
+    var reader = file.readerStreaming(io, &read_buf);
+    reader.interface.appendRemaining(allocator, &list, .limited(max)) catch |read_err| switch (read_err) {
+        error.ReadFailed => return reader.err.?,
+        else => return read_err,
+    };
+
     return list.toOwnedSlice(allocator);
 }
 
 pub fn fillRandomBytes(buf: []u8) void {
     var io_impl = std.Io.Threaded.init_single_threaded;
     const io = io_impl.io();
-    io.randomSecure(buf) catch unreachable;
+    io.random(buf);
 }

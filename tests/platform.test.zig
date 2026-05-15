@@ -37,7 +37,7 @@ test "fillRandomBytes: works with empty buffer" {
 // ── openFileReadOnly ──────────────────────────────────────────────────────────
 
 test "openFileReadOnly: returns error for missing file" {
-    const result = platform.openFileReadOnly(io(), "/nonexistent/path/that/does/not/exist.zig");
+    const result = platform.openFileReadOnly(io(), "ziez-platform-test/missing-file.zig");
     try std.testing.expectError(error.FileNotFound, result);
 }
 
