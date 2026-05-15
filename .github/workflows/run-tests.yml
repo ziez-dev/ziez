@@ -143,19 +143,32 @@ jobs:
         run: zig build -Dtarget=${{ matrix.target }}
 
   test-freebsd:
-    name: Zig Test (FreeBSD)
-    runs-on: ubuntu-latest
+    name: Zig Test (${{ matrix.arch }} - FreeBSD)
+    runs-on: ${{ matrix.os-runner }}
     strategy:
       fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            os-runner: ubuntu-latest
+          - arch: aarch64
+            os-runner: ubuntu-24.04-arm
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Install QEMU (ARM)
+        if: matrix.arch == 'aarch64'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-system-arm qemu-efi-aarch64
+
       - name: Run tests in FreeBSD VM
         uses: vmactions/freebsd-vm@v1
         with:
           release: "14.2"
+          architecture: ${{ matrix.arch }}
           prepare: |
             export IGNORE_OSVERSION=yes
             pkg update
@@ -175,6 +188,8 @@ jobs:
         include:
           - arch: x86_64
             runner: windows-latest
+          - arch: aarch64
+            runner: windows-11-arm
 
     env:
       ZIG_GLOBAL_CACHE: ${{ github.workspace }}/.zig-global-cache
