@@ -1,5 +1,5 @@
 const std = @import("std");
-const tls = @import("../tls.zig");
+const tls = @import("mod.zig");
 const rsa_sign = @import("rsa_sign.zig");
 
 const SignatureScheme = std.crypto.tls.SignatureScheme;

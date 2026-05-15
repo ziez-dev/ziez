@@ -1,6 +1,6 @@
 const std = @import("std");
 const http = std.http;
-const compression = @import("compression.zig");
+const compression = @import("../compression/mod.zig");
 const logging = @import("logging.zig");
 const util = @import("util.zig");
 const log = std.log.scoped(.ziez);
@@ -16,7 +16,7 @@ pub const Response = struct {
     server_request: ?*http.Server.Request = null,
     error_message: ?[]const u8 = null,
     compression_config: ?compression.CompressionConfig = null,
-    template_engine: ?*@import("template.zig").TemplateEngine = null,
+    template_engine: ?*@import("../template/mod.zig").TemplateEngine = null,
     logger: ?logging.Logger = null,
     request_id: []const u8 = "",
     streaming: bool = false,
@@ -179,7 +179,7 @@ pub const Response = struct {
     /// Serialize data with a SerializerConfig, applying field filtering,
     /// transforms, computed fields, groups, etc.
     pub fn serialize(self: *Response, data: anytype, comptime config: anytype) void {
-        const body = @import("serializer.zig").serialize(self.allocator, data, config) catch |e| {
+        const body = @import("../serializer/mod.zig").serialize(self.allocator, data, config) catch |e| {
             self.logError("response", "serialize_failed", e);
             self.status(500).sendBody("{\"error\":\"serialization failed\"}");
             return;
@@ -191,7 +191,7 @@ pub const Response = struct {
 
     /// Serialize a slice/array of items with a SerializerConfig.
     pub fn serializeMany(self: *Response, items: anytype, comptime config: anytype) void {
-        const body = @import("serializer.zig").serializeMany(self.allocator, items, config) catch |e| {
+        const body = @import("../serializer/mod.zig").serializeMany(self.allocator, items, config) catch |e| {
             self.logError("response", "serialize_many_failed", e);
             self.status(500).sendBody("{\"error\":\"serialization failed\"}");
             return;
@@ -309,7 +309,7 @@ pub const Response = struct {
         req.respond(body, .{
             .status = http_status,
             .extra_headers = extra_headers[0..self.headers_len],
-            .keep_alive = false,
+            .keep_alive = true,
         }) catch |e| {
             self.logError("response", "respond_uncompressed_failed", e);
         };
@@ -324,7 +324,7 @@ pub const Response = struct {
         req.respond(body, .{
             .status = http_status,
             .extra_headers = extra_headers[0..self.headers_len],
-            .keep_alive = false,
+            .keep_alive = true,
         }) catch |e| {
             self.logError("response", "respond_compressed_failed", e);
         };
@@ -399,7 +399,7 @@ pub const Response = struct {
             .respond_options = .{
                 .status = http_status,
                 .extra_headers = extra_headers[0..header_count],
-                .keep_alive = false,
+                .keep_alive = true,
             },
         });
     }
@@ -423,7 +423,7 @@ pub const Response = struct {
             .respond_options = .{
                 .status = http_status,
                 .extra_headers = extra_headers[0..header_count],
-                .keep_alive = false,
+                .keep_alive = true,
             },
         });
     }

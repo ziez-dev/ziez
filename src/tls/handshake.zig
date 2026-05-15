@@ -222,7 +222,8 @@ pub fn buildServerHello(
     cipher_suite: u16,
     key_share_group: u16,
     key_share_pubkey: []const u8,
-) [5 + 2 + 32 + 1 + 2 + 1 + 2 + 4 + 2 + key_share_pubkey.len]u8 {
+    buf: []u8,
+) []u8 {
     const supported_versions_ext = [_]u8{
         0x00, 0x2b, // ExtensionType: supported_versions
         0x00, 0x02, // length
@@ -231,10 +232,9 @@ pub fn buildServerHello(
     };
     const key_share_ext_len: u16 = 2 + 4 + @as(u16, @intCast(key_share_pubkey.len));
     const extensions_len: u16 = @intCast(supported_versions_ext.len + 4 + key_share_ext_len);
-
     const content_len: u24 = @intCast(2 + 32 + 1 + session_id.len + 2 + 1 + 2 + 2 + extensions_len);
 
-    var msg: [4 + content_len]u8 = undefined;
+    const msg = buf;
     var pos: usize = 0;
 
     // HandshakeType.server_hello
@@ -281,17 +281,16 @@ pub fn buildServerHello(
     @memcpy(msg[pos..][0..key_share_pubkey.len], key_share_pubkey);
     pos += key_share_pubkey.len;
 
-    return msg[0..pos].*;
+    return msg[0..pos];
 }
 
-/// Build a TLS record header wrapping the given content.
-pub fn wrapRecord(content_type: u8, content: []const u8) [5 + content.len]u8 {
-    var record: [5 + content.len]u8 = undefined;
-    record[0] = content_type;
-    std.mem.writeInt(u16, record[1..3], 0x0303, .big); // legacy_version TLS 1.2
-    std.mem.writeInt(u16, record[3..5], @intCast(content.len), .big);
-    @memcpy(record[5..], content);
-    return record;
+/// Build a TLS record header wrapping the given content into buf.
+pub fn wrapRecord(content_type: u8, content: []const u8, buf: []u8) []u8 {
+    buf[0] = content_type;
+    std.mem.writeInt(u16, buf[1..3], 0x0303, .big); // legacy_version TLS 1.2
+    std.mem.writeInt(u16, buf[3..5], @intCast(content.len), .big);
+    @memcpy(buf[5..][0..content.len], content);
+    return buf[0 .. 5 + content.len];
 }
 
 const builtin_endian = @import("builtin").cpu.arch.endian();

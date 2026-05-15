@@ -2,7 +2,7 @@ const std = @import("std");
 const Request = @import("request.zig").Request;
 const Response = @import("response.zig").Response;
 const middleware = @import("middleware.zig");
-const serializer = @import("serializer.zig");
+const serializer = @import("../serializer/mod.zig");
 
 // ---------------------------------------------------------------------------
 // InterceptorCtx — context passed to every interceptor

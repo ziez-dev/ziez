@@ -1,26 +1,8 @@
-/// Tests for src/template.zig
-///
-/// All filesystem work uses std.posix / linux syscalls directly (Zig 0.16).
-///
-/// Covered behaviours:
-///   1. Basic `{{var}}` string interpolation
-///   2. Integer, float, and bool field rendering
-///   3. Optional field — present value
-///   4. Optional field — null renders empty string
-///   5. Unknown variable is silently dropped
-///   6. Malformed `{{` without closing `}}` emitted literally
-///   7. Plain HTML without placeholders passes through unchanged
-///   8. Layout `{{body}}` injection
-///   9. App.setTemplateEngine integration
-///  10. Template cache returns same content on second read
 const std = @import("std");
 const ziez = @import("ziez");
+const opts = @import("ziez_options");
 
 const alloc = std.testing.allocator;
-
-// ---------------------------------------------------------------------------
-// POSIX helpers
-// ---------------------------------------------------------------------------
 
 extern "c" fn close(fd: std.posix.fd_t) c_int;
 extern "c" fn write(fd: std.posix.fd_t, buf: [*]const u8, count: usize) isize;
@@ -43,7 +25,6 @@ fn writeFileZ(path: [*:0]const u8, content: []const u8) !void {
         0o644,
     );
     defer _ = close(fd);
-
     var written: usize = 0;
     while (written < content.len) {
         const n = write(fd, content.ptr + written, content.len - written);
@@ -56,242 +37,165 @@ fn deleteFileZ(path: [*:0]const u8) void {
     _ = linux.unlinkat(linux.AT.FDCWD, path, 0);
 }
 
-// ---------------------------------------------------------------------------
-// Engine factory
-// ---------------------------------------------------------------------------
-
-fn makeEngine(views_dir: []const u8) ziez.TemplateEngine {
-    return ziez.TemplateEngine.init(alloc, .{
-        .views_dir = views_dir,
-        .default_layout = null,
-        .cache = false,
-        .extension = ".html",
-    });
-}
-
-// ---------------------------------------------------------------------------
-// 1. Basic string interpolation
-// ---------------------------------------------------------------------------
-
 test "Template: basic {{var}} interpolation" {
-    mkdirZ(".zig-cache/test-tpl-1");
-    try writeFileZ(".zig-cache/test-tpl-1/greeting.html", "Hello, {{name}}! You are {{age}} years old.");
-    defer {
-        deleteFileZ(".zig-cache/test-tpl-1/greeting.html");
-        rmdirZ(".zig-cache/test-tpl-1");
+    if (comptime opts.with_template) {
+        mkdirZ(".zig-cache/test-tpl-1");
+        try writeFileZ(".zig-cache/test-tpl-1/greeting.html", "Hello, {{name}}! You are {{age}} years old.");
+        defer {
+            deleteFileZ(".zig-cache/test-tpl-1/greeting.html");
+            rmdirZ(".zig-cache/test-tpl-1");
+        }
+        var eng = ziez.TemplateEngine.init(alloc, .{ .views_dir = ".zig-cache/test-tpl-1", .default_layout = null, .cache = false, .extension = ".html" });
+        defer eng.deinit();
+        const result = try eng.renderAlloc(alloc, "greeting", .{ .name = "Alice", .age = @as(u32, 30) });
+        defer alloc.free(result);
+        try std.testing.expectEqualStrings("Hello, Alice! You are 30 years old.", result);
     }
-
-    var eng = makeEngine(".zig-cache/test-tpl-1");
-    defer eng.deinit();
-
-    const result = try eng.renderAlloc(alloc, "greeting", .{ .name = "Alice", .age = @as(u32, 30) });
-    defer alloc.free(result);
-
-    try std.testing.expectEqualStrings("Hello, Alice! You are 30 years old.", result);
 }
-
-// ---------------------------------------------------------------------------
-// 2. Integer, float, and bool fields
-// ---------------------------------------------------------------------------
 
 test "Template: integer, float, and bool fields" {
-    mkdirZ(".zig-cache/test-tpl-2");
-    try writeFileZ(".zig-cache/test-tpl-2/types.html", "i={{i}} f={{f}} b={{b}}");
-    defer {
-        deleteFileZ(".zig-cache/test-tpl-2/types.html");
-        rmdirZ(".zig-cache/test-tpl-2");
+    if (comptime opts.with_template) {
+        mkdirZ(".zig-cache/test-tpl-2");
+        try writeFileZ(".zig-cache/test-tpl-2/types.html", "i={{i}} f={{f}} b={{b}}");
+        defer {
+            deleteFileZ(".zig-cache/test-tpl-2/types.html");
+            rmdirZ(".zig-cache/test-tpl-2");
+        }
+        var eng = ziez.TemplateEngine.init(alloc, .{ .views_dir = ".zig-cache/test-tpl-2", .default_layout = null, .cache = false, .extension = ".html" });
+        defer eng.deinit();
+        const result = try eng.renderAlloc(alloc, "types", .{ .i = @as(i32, -7), .f = @as(f64, 3.14), .b = true });
+        defer alloc.free(result);
+        try std.testing.expect(std.mem.indexOf(u8, result, "i=-7") != null);
+        try std.testing.expect(std.mem.indexOf(u8, result, "b=true") != null);
     }
-
-    var eng = makeEngine(".zig-cache/test-tpl-2");
-    defer eng.deinit();
-
-    const result = try eng.renderAlloc(alloc, "types", .{
-        .i = @as(i32, -7),
-        .f = @as(f64, 3.14),
-        .b = true,
-    });
-    defer alloc.free(result);
-
-    try std.testing.expect(std.mem.indexOf(u8, result, "i=-7") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result, "b=true") != null);
 }
-
-// ---------------------------------------------------------------------------
-// 3. Optional field — present value
-// ---------------------------------------------------------------------------
 
 test "Template: optional field with value renders correctly" {
-    mkdirZ(".zig-cache/test-tpl-3");
-    try writeFileZ(".zig-cache/test-tpl-3/opt.html", "val={{val}}");
-    defer {
-        deleteFileZ(".zig-cache/test-tpl-3/opt.html");
-        rmdirZ(".zig-cache/test-tpl-3");
+    if (comptime opts.with_template) {
+        mkdirZ(".zig-cache/test-tpl-3");
+        try writeFileZ(".zig-cache/test-tpl-3/opt.html", "val={{val}}");
+        defer {
+            deleteFileZ(".zig-cache/test-tpl-3/opt.html");
+            rmdirZ(".zig-cache/test-tpl-3");
+        }
+        var eng = ziez.TemplateEngine.init(alloc, .{ .views_dir = ".zig-cache/test-tpl-3", .default_layout = null, .cache = false, .extension = ".html" });
+        defer eng.deinit();
+        const result = try eng.renderAlloc(alloc, "opt", .{ .val = @as(?[]const u8, "present") });
+        defer alloc.free(result);
+        try std.testing.expectEqualStrings("val=present", result);
     }
-
-    var eng = makeEngine(".zig-cache/test-tpl-3");
-    defer eng.deinit();
-
-    const result = try eng.renderAlloc(alloc, "opt", .{ .val = @as(?[]const u8, "present") });
-    defer alloc.free(result);
-
-    try std.testing.expectEqualStrings("val=present", result);
 }
-
-// ---------------------------------------------------------------------------
-// 4. Unknown variable silently dropped
-// ---------------------------------------------------------------------------
 
 test "Template: unknown variable is silently dropped" {
-    mkdirZ(".zig-cache/test-tpl-4");
-    try writeFileZ(".zig-cache/test-tpl-4/unknown.html", "[{{unknown}}]");
-    defer {
-        deleteFileZ(".zig-cache/test-tpl-4/unknown.html");
-        rmdirZ(".zig-cache/test-tpl-4");
+    if (comptime opts.with_template) {
+        mkdirZ(".zig-cache/test-tpl-4");
+        try writeFileZ(".zig-cache/test-tpl-4/unknown.html", "[{{unknown}}]");
+        defer {
+            deleteFileZ(".zig-cache/test-tpl-4/unknown.html");
+            rmdirZ(".zig-cache/test-tpl-4");
+        }
+        var eng = ziez.TemplateEngine.init(alloc, .{ .views_dir = ".zig-cache/test-tpl-4", .default_layout = null, .cache = false, .extension = ".html" });
+        defer eng.deinit();
+        const result = try eng.renderAlloc(alloc, "unknown", .{ .name = "test" });
+        defer alloc.free(result);
+        try std.testing.expectEqualStrings("[]", result);
     }
-
-    var eng = makeEngine(".zig-cache/test-tpl-4");
-    defer eng.deinit();
-
-    const result = try eng.renderAlloc(alloc, "unknown", .{ .name = "test" });
-    defer alloc.free(result);
-
-    try std.testing.expectEqualStrings("[]", result);
 }
-
-// ---------------------------------------------------------------------------
-// 5. Malformed {{ emitted literally
-// ---------------------------------------------------------------------------
 
 test "Template: unclosed {{ is emitted literally" {
-    mkdirZ(".zig-cache/test-tpl-5");
-    try writeFileZ(".zig-cache/test-tpl-5/broken.html", "{{unclosed text");
-    defer {
-        deleteFileZ(".zig-cache/test-tpl-5/broken.html");
-        rmdirZ(".zig-cache/test-tpl-5");
+    if (comptime opts.with_template) {
+        mkdirZ(".zig-cache/test-tpl-5");
+        try writeFileZ(".zig-cache/test-tpl-5/broken.html", "{{unclosed text");
+        defer {
+            deleteFileZ(".zig-cache/test-tpl-5/broken.html");
+            rmdirZ(".zig-cache/test-tpl-5");
+        }
+        var eng = ziez.TemplateEngine.init(alloc, .{ .views_dir = ".zig-cache/test-tpl-5", .default_layout = null, .cache = false, .extension = ".html" });
+        defer eng.deinit();
+        const result = try eng.renderAlloc(alloc, "broken", .{});
+        defer alloc.free(result);
+        try std.testing.expect(std.mem.startsWith(u8, result, "{{"));
     }
-
-    var eng = makeEngine(".zig-cache/test-tpl-5");
-    defer eng.deinit();
-
-    const result = try eng.renderAlloc(alloc, "broken", .{});
-    defer alloc.free(result);
-
-    try std.testing.expect(std.mem.startsWith(u8, result, "{{"));
 }
-
-// ---------------------------------------------------------------------------
-// 6. Plain HTML unchanged
-// ---------------------------------------------------------------------------
 
 test "Template: plain HTML without placeholders is unchanged" {
-    mkdirZ(".zig-cache/test-tpl-6");
-    const html = "<html><body><p>Static content</p></body></html>";
-    try writeFileZ(".zig-cache/test-tpl-6/plain.html", html);
-    defer {
-        deleteFileZ(".zig-cache/test-tpl-6/plain.html");
-        rmdirZ(".zig-cache/test-tpl-6");
+    if (comptime opts.with_template) {
+        mkdirZ(".zig-cache/test-tpl-6");
+        const html = "<html><body><p>Static content</p></body></html>";
+        try writeFileZ(".zig-cache/test-tpl-6/plain.html", html);
+        defer {
+            deleteFileZ(".zig-cache/test-tpl-6/plain.html");
+            rmdirZ(".zig-cache/test-tpl-6");
+        }
+        var eng = ziez.TemplateEngine.init(alloc, .{ .views_dir = ".zig-cache/test-tpl-6", .default_layout = null, .cache = false, .extension = ".html" });
+        defer eng.deinit();
+        const result = try eng.renderAlloc(alloc, "plain", .{ .unused = "x" });
+        defer alloc.free(result);
+        try std.testing.expectEqualStrings(html, result);
     }
-
-    var eng = makeEngine(".zig-cache/test-tpl-6");
-    defer eng.deinit();
-
-    const result = try eng.renderAlloc(alloc, "plain", .{ .unused = "x" });
-    defer alloc.free(result);
-
-    try std.testing.expectEqualStrings(html, result);
 }
-
-// ---------------------------------------------------------------------------
-// 7. Layout {{body}} injection
-// ---------------------------------------------------------------------------
 
 test "Template: layout {{body}} is replaced with rendered view" {
-    mkdirZ(".zig-cache/test-tpl-7");
-    mkdirZ(".zig-cache/test-tpl-7/layouts");
-
-    const layout = "<!DOCTYPE html><html><head><title>{{title}}</title></head><body>{{body}}</body></html>";
-    try writeFileZ(".zig-cache/test-tpl-7/layouts/main.html", layout);
-    try writeFileZ(".zig-cache/test-tpl-7/page.html", "<h1>{{heading}}</h1>");
-    defer {
-        deleteFileZ(".zig-cache/test-tpl-7/layouts/main.html");
-        rmdirZ(".zig-cache/test-tpl-7/layouts");
-        deleteFileZ(".zig-cache/test-tpl-7/page.html");
-        rmdirZ(".zig-cache/test-tpl-7");
+    if (comptime opts.with_template) {
+        mkdirZ(".zig-cache/test-tpl-7");
+        mkdirZ(".zig-cache/test-tpl-7/layouts");
+        const layout = "<!DOCTYPE html><html><head><title>{{title}}</title></head><body>{{body}}</body></html>";
+        try writeFileZ(".zig-cache/test-tpl-7/layouts/main.html", layout);
+        try writeFileZ(".zig-cache/test-tpl-7/page.html", "<h1>{{heading}}</h1>");
+        defer {
+            deleteFileZ(".zig-cache/test-tpl-7/layouts/main.html");
+            rmdirZ(".zig-cache/test-tpl-7/layouts");
+            deleteFileZ(".zig-cache/test-tpl-7/page.html");
+            rmdirZ(".zig-cache/test-tpl-7");
+        }
+        var eng = ziez.TemplateEngine.init(alloc, .{ .views_dir = ".zig-cache/test-tpl-7", .default_layout = "main", .cache = false, .extension = ".html" });
+        defer eng.deinit();
+        const result = try eng.renderAlloc(alloc, "page", .{ .title = "My Page", .heading = "Welcome" });
+        defer alloc.free(result);
+        try std.testing.expect(std.mem.indexOf(u8, result, "<title>My Page</title>") != null);
+        try std.testing.expect(std.mem.indexOf(u8, result, "<h1>Welcome</h1>") != null);
+        try std.testing.expect(std.mem.indexOf(u8, result, "{{body}}") == null);
     }
-
-    var eng = ziez.TemplateEngine.init(alloc, .{
-        .views_dir = ".zig-cache/test-tpl-7",
-        .default_layout = "main",
-        .cache = false,
-        .extension = ".html",
-    });
-    defer eng.deinit();
-
-    const result = try eng.renderAlloc(alloc, "page", .{ .title = "My Page", .heading = "Welcome" });
-    defer alloc.free(result);
-
-    try std.testing.expect(std.mem.indexOf(u8, result, "<title>My Page</title>") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result, "<h1>Welcome</h1>") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result, "{{body}}") == null);
 }
-
-// ---------------------------------------------------------------------------
-// 8. App.setTemplateEngine integration
-// ---------------------------------------------------------------------------
 
 test "App.setTemplateEngine stores engine in router" {
-    var app = ziez.init(alloc);
-    defer app.deinit();
-
-    var engine = ziez.TemplateEngine.init(alloc, .{});
-    defer engine.deinit();
-
-    app.setTemplateEngine(&engine);
-
-    try std.testing.expect(app.router.template_engine != null);
-    try std.testing.expectEqual(&engine, app.router.template_engine.?);
+    if (comptime opts.with_template) {
+        var app = ziez.init(alloc);
+        defer app.deinit();
+        var engine = ziez.TemplateEngine.init(alloc, .{});
+        defer engine.deinit();
+        app.setTemplateEngine(&engine);
+        try std.testing.expect(app.router.template_engine != null);
+        try std.testing.expectEqual(&engine, app.router.template_engine.?);
+    }
 }
-
-// ---------------------------------------------------------------------------
-// 9. TemplateConfig — correct defaults
-// ---------------------------------------------------------------------------
 
 test "TemplateConfig: default values are sensible" {
-    const cfg = ziez.TemplateConfig{};
-    try std.testing.expectEqualStrings("./views", cfg.views_dir);
-    try std.testing.expectEqualStrings(".html", cfg.extension);
-    try std.testing.expect(cfg.cache);
-    try std.testing.expect(cfg.default_layout == null);
+    if (comptime opts.with_template) {
+        const cfg = ziez.TemplateConfig{};
+        try std.testing.expectEqualStrings("./views", cfg.views_dir);
+        try std.testing.expectEqualStrings(".html", cfg.extension);
+        try std.testing.expect(cfg.cache);
+        try std.testing.expect(cfg.default_layout == null);
+    }
 }
 
-// ---------------------------------------------------------------------------
-// 10. Cache — second render returns cached content
-// ---------------------------------------------------------------------------
-
 test "Template: cache returns same content on second render" {
-    mkdirZ(".zig-cache/test-tpl-10");
-    try writeFileZ(".zig-cache/test-tpl-10/cached.html", "{{val}}");
-    defer {
-        deleteFileZ(".zig-cache/test-tpl-10/cached.html");
-        rmdirZ(".zig-cache/test-tpl-10");
+    if (comptime opts.with_template) {
+        mkdirZ(".zig-cache/test-tpl-10");
+        try writeFileZ(".zig-cache/test-tpl-10/cached.html", "{{val}}");
+        defer {
+            deleteFileZ(".zig-cache/test-tpl-10/cached.html");
+            rmdirZ(".zig-cache/test-tpl-10");
+        }
+        var eng = ziez.TemplateEngine.init(alloc, .{ .views_dir = ".zig-cache/test-tpl-10", .default_layout = null, .cache = true, .extension = ".html" });
+        defer eng.deinit();
+        const ctx = .{ .val = "hit" };
+        const r1 = try eng.renderAlloc(alloc, "cached", ctx);
+        defer alloc.free(r1);
+        const r2 = try eng.renderAlloc(alloc, "cached", ctx);
+        defer alloc.free(r2);
+        try std.testing.expectEqualStrings(r1, r2);
+        try std.testing.expectEqualStrings("hit", r1);
     }
-
-    var eng = ziez.TemplateEngine.init(alloc, .{
-        .views_dir = ".zig-cache/test-tpl-10",
-        .default_layout = null,
-        .cache = true, // enable cache
-        .extension = ".html",
-    });
-    defer eng.deinit();
-
-    const ctx = .{ .val = "hit" };
-
-    const r1 = try eng.renderAlloc(alloc, "cached", ctx);
-    defer alloc.free(r1);
-
-    const r2 = try eng.renderAlloc(alloc, "cached", ctx);
-    defer alloc.free(r2);
-
-    try std.testing.expectEqualStrings(r1, r2);
-    try std.testing.expectEqualStrings("hit", r1);
 }

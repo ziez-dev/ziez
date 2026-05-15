@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 pub const LogLevel = enum(u8) {
     trace = 10,
@@ -51,8 +52,6 @@ pub const Sink = struct {
 
 pub const LoggerConfig = struct {
     level: LogLevel = .info,
-    auto_request_log: bool = false,
-    lifecycle_trace: bool = false,
     redact: []const []const u8 = &.{},
     sink: Sink = Sink.stderr(),
 };
@@ -68,8 +67,6 @@ pub const Logger = struct {
         arena: std.heap.ArenaAllocator,
         mutex: std.atomic.Mutex = .unlocked,
         level: LogLevel,
-        auto_request_log: bool,
-        lifecycle_trace: bool,
         redact: []const []const u8,
         sink: Sink,
     };
@@ -93,24 +90,12 @@ pub const Logger = struct {
         }
     };
 
-    pub const RequestSummary = struct {
-        req_id: []const u8,
-        method: []const u8,
-        path: []const u8,
-        status: u16,
-        response_time_ms: f64,
-        user_agent: ?[]const u8 = null,
-        content_length: ?u64 = null,
-    };
-
     pub fn init(allocator: std.mem.Allocator, cfg: LoggerConfig) Logger {
         const state = allocator.create(State) catch @panic("logger state allocation failed");
         state.* = .{
             .allocator = allocator,
             .arena = std.heap.ArenaAllocator.init(allocator),
             .level = cfg.level,
-            .auto_request_log = cfg.auto_request_log,
-            .lifecycle_trace = cfg.lifecycle_trace,
             .redact = &.{},
             .sink = cfg.sink,
         };
@@ -130,8 +115,6 @@ pub const Logger = struct {
         defer self.state.mutex.unlock();
 
         self.state.level = cfg.level;
-        self.state.auto_request_log = cfg.auto_request_log;
-        self.state.lifecycle_trace = cfg.lifecycle_trace;
         self.state.sink = cfg.sink;
         self.state.redact = dupRedactPatterns(self.state, cfg.redact);
     }
@@ -142,8 +125,6 @@ pub const Logger = struct {
 
         return .{
             .level = self.state.level,
-            .auto_request_log = self.state.auto_request_log,
-            .lifecycle_trace = self.state.lifecycle_trace,
             .redact = self.state.redact,
             .sink = self.state.sink,
         };
@@ -169,18 +150,6 @@ pub const Logger = struct {
         lockState(self.state);
         defer self.state.mutex.unlock();
         return @intFromEnum(level) >= @intFromEnum(self.state.level);
-    }
-
-    pub fn autoRequestLogEnabled(self: Logger) bool {
-        lockState(self.state);
-        defer self.state.mutex.unlock();
-        return self.state.auto_request_log;
-    }
-
-    pub fn lifecycleTraceEnabled(self: Logger) bool {
-        lockState(self.state);
-        defer self.state.mutex.unlock();
-        return self.state.lifecycle_trace;
     }
 
     pub fn trace(self: Logger, msg: []const u8) void {
@@ -235,48 +204,49 @@ pub const Logger = struct {
         self.emit(.fatal, msg, fields);
     }
 
-    pub fn logRequestSummary(self: Logger, summary: RequestSummary) void {
-        self.infoFields(.{
-            .event = "request_completed",
-            .req_id = summary.req_id,
-            .method = summary.method,
-            .path = summary.path,
-            .status = summary.status,
-            .response_time_ms = summary.response_time_ms,
-            .user_agent = summary.user_agent,
-            .content_length = summary.content_length,
-        }, "request completed");
-    }
-
     fn emit(self: Logger, level: LogLevel, msg: []const u8, maybe_fields: anytype) void {
         lockState(self.state);
         defer self.state.mutex.unlock();
 
         if (@intFromEnum(level) < @intFromEnum(self.state.level)) return;
 
+        // Fast path: build into a 4 KiB stack buffer — zero heap allocation for typical log lines.
+        var stack_buf: [4096]u8 = undefined;
+        var fba = std.heap.FixedBufferAllocator.init(&stack_buf);
         var line: std.ArrayList(u8) = .empty;
-        defer line.deinit(self.state.allocator);
-
-        line.append(self.state.allocator, '{') catch return;
-
-        var first = true;
-        appendKeyValueString(&line, self.state.allocator, "level", @tagName(level), &first) catch return;
-        appendKeyValueInt(&line, self.state.allocator, "ts", wallTimestampMs(), &first) catch return;
-
-        if (self.bindings_fragment.len > 0) {
-            appendSeparator(&line, self.state.allocator, &first) catch return;
-            line.appendSlice(self.state.allocator, self.bindings_fragment) catch return;
+        if (buildLine(self, &line, fba.allocator(), level, msg, maybe_fields)) {
+            self.state.sink.write(level, line.items);
+            return;
         }
 
-        appendKeyValueString(&line, self.state.allocator, "msg", msg, &first) catch return;
+        // Slow path: line exceeded 4 KiB; fall back to heap allocator.
+        line = .empty;
+        defer line.deinit(self.state.allocator);
+        if (buildLine(self, &line, self.state.allocator, level, msg, maybe_fields)) {
+            self.state.sink.write(level, line.items);
+        }
+    }
+
+    fn buildLine(self: Logger, line: *std.ArrayList(u8), alloc: std.mem.Allocator, level: LogLevel, msg: []const u8, maybe_fields: anytype) bool {
+        line.append(alloc, '{') catch return false;
+        var first = true;
+        appendKeyValueString(line, alloc, "level", @tagName(level), &first) catch return false;
+        appendKeyValueInt(line, alloc, "ts", wallTimestampMs(), &first) catch return false;
+
+        if (self.bindings_fragment.len > 0) {
+            appendSeparator(line, alloc, &first) catch return false;
+            line.appendSlice(alloc, self.bindings_fragment) catch return false;
+        }
+
+        appendKeyValueString(line, alloc, "msg", msg, &first) catch return false;
 
         if (@TypeOf(maybe_fields) != @TypeOf(null)) {
             var path = PathStack{};
-            appendObjectEntries(&line, self.state.allocator, maybe_fields, &first, &path, self.state.redact) catch return;
+            appendObjectEntries(line, alloc, maybe_fields, &first, &path, self.state.redact) catch return false;
         }
 
-        line.appendSlice(self.state.allocator, "}\n") catch return;
-        self.state.sink.write(level, line.items);
+        line.appendSlice(alloc, "}\n") catch return false;
+        return true;
     }
 
     fn dupRedactPatterns(state: *State, patterns: []const []const u8) []const []const u8 {

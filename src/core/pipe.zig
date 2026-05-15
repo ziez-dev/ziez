@@ -2,8 +2,8 @@ const std = @import("std");
 const Request = @import("request.zig").Request;
 const Response = @import("response.zig").Response;
 const middleware = @import("middleware.zig");
-const schema_mod = @import("schema.zig");
-const validator = @import("validator.zig");
+const schema_mod = @import("../validator/schema.zig");
+const validator = @import("../validator/mod.zig");
 
 /// Parse a route param into an integer type.
 /// handler_fn signature: fn(*Request, *Response, IntType) anyerror!void

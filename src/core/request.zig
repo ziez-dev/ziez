@@ -1,7 +1,7 @@
 const std = @import("std");
 const http = std.http;
 const util = @import("util.zig");
-const multipart = @import("multipart.zig");
+const multipart = @import("../multipart/mod.zig");
 
 pub const Request = struct {
     method: util.HttpMethod,

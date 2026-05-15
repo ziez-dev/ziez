@@ -1,5 +1,6 @@
 const std = @import("std");
 const ziez = @import("ziez");
+const opts = @import("ziez_options");
 
 const Capture = struct {
     allocator: std.mem.Allocator,
@@ -117,42 +118,36 @@ test "Logger child merges bindings into output" {
     try std.testing.expect(contains(capture.buf.items, "\"order_id\":\"ord_123\""));
 }
 
-test "App logging defaults are enabled core, request off, lifecycle off" {
+test "App logging defaults: level is info" {
     var app = ziez.App.init(std.testing.allocator);
     defer app.deinit();
 
     const cfg = app.logger.getConfig();
     try std.testing.expectEqual(ziez.LogLevel.info, cfg.level);
-    try std.testing.expect(!cfg.auto_request_log);
-    try std.testing.expect(!cfg.lifecycle_trace);
 }
 
 test "Logger request summary emits expected schema" {
-    var capture = Capture.init(std.testing.allocator);
-    defer capture.deinit();
-
-    var logger = ziez.Logger.init(std.testing.allocator, .{
-        .level = .info,
-        .sink = capture.sink(),
-    });
-    defer logger.deinit();
-
-    logger.logRequestSummary(.{
-        .req_id = "req-123",
-        .method = "GET",
-        .path = "/users",
-        .status = 200,
-        .response_time_ms = 12.5,
-        .user_agent = "curl/8.0.0",
-        .content_length = 42,
-    });
-
-    try std.testing.expect(contains(capture.buf.items, "\"event\":\"request_completed\""));
-    try std.testing.expect(contains(capture.buf.items, "\"req_id\":\"req-123\""));
-    try std.testing.expect(contains(capture.buf.items, "\"method\":\"GET\""));
-    try std.testing.expect(contains(capture.buf.items, "\"path\":\"/users\""));
-    try std.testing.expect(contains(capture.buf.items, "\"status\":200"));
-    try std.testing.expect(contains(capture.buf.items, "\"response_time_ms\":12.5"));
+    if (comptime opts.with_tracker) {
+        var capture = Capture.init(std.testing.allocator);
+        defer capture.deinit();
+        var logger = ziez.Logger.init(std.testing.allocator, .{ .level = .info, .sink = capture.sink() });
+        defer logger.deinit();
+        ziez.logRequestSummary(logger, .{
+            .req_id = "req-123",
+            .method = "GET",
+            .path = "/users",
+            .status = 200,
+            .response_time_ms = 12.5,
+            .user_agent = "curl/8.0.0",
+            .content_length = 42,
+        });
+        try std.testing.expect(contains(capture.buf.items, "\"event\":\"request_completed\""));
+        try std.testing.expect(contains(capture.buf.items, "\"req_id\":\"req-123\""));
+        try std.testing.expect(contains(capture.buf.items, "\"method\":\"GET\""));
+        try std.testing.expect(contains(capture.buf.items, "\"path\":\"/users\""));
+        try std.testing.expect(contains(capture.buf.items, "\"status\":200"));
+        try std.testing.expect(contains(capture.buf.items, "\"response_time_ms\":12.5"));
+    }
 }
 
 test "Router lifecycle trace emits middleware, interceptor, and handler events" {
@@ -161,9 +156,9 @@ test "Router lifecycle trace emits middleware, interceptor, and handler events" 
 
     var router = ziez.Router.init(std.testing.allocator);
     defer router.deinit();
+    router.lifecycle_trace = true;
     router.logger.configure(.{
         .level = .debug,
-        .lifecycle_trace = true,
         .sink = capture.sink(),
     });
     router.use(passMiddleware);

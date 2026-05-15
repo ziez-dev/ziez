@@ -1,7 +1,7 @@
 const std = @import("std");
-const util = @import("util.zig");
-const Request = @import("request.zig").Request;
-const Response = @import("response.zig").Response;
+const util = @import("../core/util.zig");
+const Request = @import("../core/request.zig").Request;
+const Response = @import("../core/response.zig").Response;
 
 pub const OriginPredicate = *const fn ([]const u8) bool;
 

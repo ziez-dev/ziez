@@ -1,5 +1,5 @@
 const std = @import("std");
-const tls = @import("../tls.zig");
+const tls = @import("mod.zig");
 
 /// RSA PKCS#1 v1.5 signature.
 /// Computes: signature = (pad(message_hash) ^ d) mod n

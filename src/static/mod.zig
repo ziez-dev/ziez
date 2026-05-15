@@ -1,7 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
-const Request = @import("request.zig").Request;
-const Response = @import("response.zig").Response;
+const Request = @import("../core/request.zig").Request;
+const Response = @import("../core/response.zig").Response;
 
 // ── POSIX shim ────────────────────────────────────────────────────────────────
 // Zig 0.16 moved all Dir/File I/O behind std.Io (async). For synchronous
@@ -192,7 +192,7 @@ pub fn handle(req: *Request, res: *Response, config: StaticConfig) !bool {
             }
 
             // Patch the active file_path in-place for MIME type lookup
-            @memcpy(path_buf[0 .. idx_buf.len], &idx_buf);
+            @memcpy(path_buf[0..idx_buf.len], &idx_buf);
 
             break :blk posixOpen(idx_path) catch return false;
         },

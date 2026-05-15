@@ -1,5 +1,5 @@
 const std = @import("std");
-const validator = @import("validator.zig");
+const validator = @import("mod.zig");
 
 pub const Format = enum {
     email,
@@ -142,7 +142,7 @@ fn validateFieldRecursive(allocator: std.mem.Allocator, field_name: []const u8, 
             validateFieldsRecursive(allocator, fv, errs);
         }
     } else if (fti == .optional) {
-        const child = @typeInfo(fti.@"optional".child);
+        const child = @typeInfo(fti.optional.child);
         if (child == .@"struct") {
             if (fv) |v| {
                 const NestedT = @TypeOf(v);

@@ -1,10 +1,10 @@
 const std = @import("std");
 
-pub const cert = @import("tls/cert.zig");
-pub const rsa_sign = @import("tls/rsa_sign.zig");
-pub const sign_mod = @import("tls/sign.zig");
-pub const server = @import("tls/server.zig").Server;
-pub const server_entropy_len = @import("tls/server.zig").Server.entropy_len;
+pub const cert = @import("cert.zig");
+pub const rsa_sign = @import("rsa_sign.zig");
+pub const sign_mod = @import("sign.zig");
+pub const server = @import("server.zig").Server;
+pub const server_entropy_len = @import("server.zig").Server.entropy_len;
 
 const Certificate = std.crypto.Certificate;
 

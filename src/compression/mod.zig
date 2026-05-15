@@ -1,6 +1,7 @@
 const std = @import("std");
 const flate = std.compress.flate;
-const brotli_c = @import("brotli_c");
+const opts = @import("ziez_options");
+const brotli_c = if (opts.with_compression) @import("brotli_c") else struct {};
 
 pub const Algorithm = enum {
     gzip,
@@ -196,23 +197,27 @@ fn compressBrotli(
     body: []const u8,
     level: CompressionLevel,
 ) ![]const u8 {
+    if (!opts.with_compression) {
+        return error.CompressionDisabled;
+    }
+    const BrotliC = @import("brotli_c");
     const quality = level.toBrotliQuality();
-    const max_size = brotli_c.BrotliEncoderMaxCompressedSize(body.len);
+    const max_size = BrotliC.BrotliEncoderMaxCompressedSize(body.len);
     const output = try allocator.alloc(u8, max_size);
     errdefer allocator.free(output);
 
     var encoded_size: usize = output.len;
-    const result = brotli_c.BrotliEncoderCompress(
+    const result = BrotliC.BrotliEncoderCompress(
         quality,
-        brotli_c.BROTLI_DEFAULT_WINDOW,
-        brotli_c.BROTLI_MODE_GENERIC,
+        BrotliC.BROTLI_DEFAULT_WINDOW,
+        BrotliC.BROTLI_MODE_GENERIC,
         body.len,
         body.ptr,
         &encoded_size,
         output.ptr,
     );
 
-    if (result != brotli_c.BROTLI_TRUE) return error.BrotliEncodeFailed;
+    if (result != BrotliC.BROTLI_TRUE) return error.BrotliEncodeFailed;
 
     return allocator.realloc(output, encoded_size);
 }

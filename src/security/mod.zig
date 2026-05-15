@@ -1,6 +1,6 @@
 const std = @import("std");
-const Request = @import("request.zig").Request;
-const Response = @import("response.zig").Response;
+const Request = @import("../core/request.zig").Request;
+const Response = @import("../core/response.zig").Response;
 
 pub const XssMode = enum {
     strip,
@@ -254,84 +254,46 @@ fn escapeHtml(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
 }
 
 fn stripXss(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
-    const without_scripts = try stripScriptBlocks(allocator, input);
-    defer allocator.free(without_scripts);
-
-    const without_events = try stripEventHandlers(allocator, without_scripts);
-    defer allocator.free(without_events);
-
-    const without_js_scheme = try stripJavascriptScheme(allocator, without_events);
-    defer allocator.free(without_js_scheme);
-
-    return stripTags(allocator, without_js_scheme);
-}
-
-fn stripScriptBlocks(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
-    var out = std.ArrayList(u8).empty;
-    errdefer out.deinit(allocator);
-
-    var pos: usize = 0;
-    while (findIgnoreCaseFrom(input, "<script", pos)) |start| {
-        try out.appendSlice(allocator, input[pos..start]);
-        const close_start = findIgnoreCaseFrom(input, "</script>", start) orelse {
-            pos = input.len;
-            break;
-        };
-        pos = close_start + "</script>".len;
-    }
-
-    if (pos < input.len) {
-        try out.appendSlice(allocator, input[pos..]);
-    }
-
-    return out.toOwnedSlice(allocator);
-}
-
-fn stripEventHandlers(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
     var out = std.ArrayList(u8).empty;
     errdefer out.deinit(allocator);
 
     var i: usize = 0;
     while (i < input.len) {
-        if (isEventHandlerStart(input, i)) {
-            i = skipEventHandler(input, i);
-            continue;
+        switch (input[i]) {
+            '<' => {
+                if (findIgnoreCaseFrom(input, "<script", i) == i) {
+                    // Skip the entire script block including content.
+                    if (findIgnoreCaseFrom(input, "</script>", i)) |close| {
+                        i = close + "</script>".len;
+                    } else {
+                        i = input.len;
+                    }
+                } else {
+                    // Skip the entire tag up to and including '>'.
+                    i = (std.mem.indexOfScalarPos(u8, input, i + 1, '>') orelse (input.len - 1)) + 1;
+                }
+            },
+            'j', 'J' => {
+                if (findIgnoreCaseFrom(input, "javascript:", i) == i) {
+                    i += "javascript:".len;
+                } else {
+                    try out.append(allocator, input[i]);
+                    i += 1;
+                }
+            },
+            'o', 'O' => {
+                if (isEventHandlerStart(input, i)) {
+                    i = skipEventHandler(input, i);
+                } else {
+                    try out.append(allocator, input[i]);
+                    i += 1;
+                }
+            },
+            else => {
+                try out.append(allocator, input[i]);
+                i += 1;
+            },
         }
-        try out.append(allocator, input[i]);
-        i += 1;
-    }
-
-    return out.toOwnedSlice(allocator);
-}
-
-fn stripJavascriptScheme(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
-    var out = std.ArrayList(u8).empty;
-    errdefer out.deinit(allocator);
-
-    var pos: usize = 0;
-    while (findIgnoreCaseFrom(input, "javascript:", pos)) |start| {
-        try out.appendSlice(allocator, input[pos..start]);
-        pos = start + "javascript:".len;
-    }
-    if (pos < input.len) try out.appendSlice(allocator, input[pos..]);
-
-    return out.toOwnedSlice(allocator);
-}
-
-fn stripTags(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
-    var out = std.ArrayList(u8).empty;
-    errdefer out.deinit(allocator);
-
-    var i: usize = 0;
-    while (i < input.len) {
-        if (input[i] == '<') {
-            if (std.mem.indexOfScalarPos(u8, input, i, '>')) |end| {
-                i = end + 1;
-                continue;
-            }
-        }
-        try out.append(allocator, input[i]);
-        i += 1;
     }
 
     return out.toOwnedSlice(allocator);

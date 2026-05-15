@@ -16,6 +16,7 @@
 ///  10. App.serveStatic stores config in router
 const std = @import("std");
 const ziez = @import("ziez");
+const opts = @import("ziez_options");
 
 // ---------------------------------------------------------------------------
 // POSIX helpers — write / delete files without std.Io
@@ -96,27 +97,22 @@ fn responseHeader(res: *const ziez.Response, name: []const u8) ?[]const u8 {
 // ---------------------------------------------------------------------------
 
 test "Static: serves existing file with 200 and correct Content-Type" {
-    mkdirZ(".zig-cache/test-static-1");
-    try writeFileZ(".zig-cache/test-static-1/hello.html", "<h1>Hello</h1>");
-    defer {
-        deleteFileZ(".zig-cache/test-static-1/hello.html");
-        rmdirZ(".zig-cache/test-static-1");
+    if (comptime opts.with_static) {
+        mkdirZ(".zig-cache/test-static-1");
+        try writeFileZ(".zig-cache/test-static-1/hello.html", "<h1>Hello</h1>");
+        defer {
+            deleteFileZ(".zig-cache/test-static-1/hello.html");
+            rmdirZ(".zig-cache/test-static-1");
+        }
+        var req = makeRequest(.GET, "/static/hello.html", "GET /static/hello.html HTTP/1.1\r\n\r\n");
+        var res = makeResponse();
+        const handled = try ziez.staticHandle(&req, &res, .{ .root = ".zig-cache/test-static-1", .prefix = "/static", .etag = false });
+        try std.testing.expect(handled);
+        try std.testing.expectEqual(@as(u16, 200), res.status_code);
+        const ct = responseHeader(&res, "content-type") orelse responseHeader(&res, "Content-Type");
+        try std.testing.expect(ct != null);
+        try std.testing.expect(std.mem.indexOf(u8, ct.?, "text/html") != null);
     }
-
-    var req = makeRequest(.GET, "/static/hello.html", "GET /static/hello.html HTTP/1.1\r\n\r\n");
-    var res = makeResponse();
-
-    const handled = try ziez.staticHandle(&req, &res, .{
-        .root = ".zig-cache/test-static-1",
-        .prefix = "/static",
-        .etag = false,
-    });
-    try std.testing.expect(handled);
-    try std.testing.expectEqual(@as(u16, 200), res.status_code);
-
-    const ct = responseHeader(&res, "content-type") orelse responseHeader(&res, "Content-Type");
-    try std.testing.expect(ct != null);
-    try std.testing.expect(std.mem.indexOf(u8, ct.?, "text/html") != null);
 }
 
 // ---------------------------------------------------------------------------
@@ -124,45 +120,34 @@ test "Static: serves existing file with 200 and correct Content-Type" {
 // ---------------------------------------------------------------------------
 
 test "Static: ETag round-trip returns 304 Not Modified" {
-    mkdirZ(".zig-cache/test-static-2");
-    try writeFileZ(".zig-cache/test-static-2/data.json", "{\"ok\":true}");
-    defer {
-        deleteFileZ(".zig-cache/test-static-2/data.json");
-        rmdirZ(".zig-cache/test-static-2");
-    }
-
-    // First request — capture ETag
-    var etag_value: [64]u8 = undefined;
-    var etag_len: usize = 0;
-    {
-        var req = makeRequest(.GET, "/data.json", "GET /data.json HTTP/1.1\r\n\r\n");
-        var res = makeResponse();
-        const handled = try ziez.staticHandle(&req, &res, .{
-            .root = ".zig-cache/test-static-2",
-            .prefix = "/",
-            .etag = true,
-        });
-        try std.testing.expect(handled);
-        try std.testing.expectEqual(@as(u16, 200), res.status_code);
-
-        const etag = responseHeader(&res, "ETag") orelse unreachable;
-        @memcpy(etag_value[0..etag.len], etag);
-        etag_len = etag.len;
-    }
-
-    // Second request — send back the ETag, expect 304
-    {
-        var head_buf: [256]u8 = undefined;
-        const head = try std.fmt.bufPrint(&head_buf, "GET /data.json HTTP/1.1\r\nIf-None-Match: {s}\r\n\r\n", .{etag_value[0..etag_len]});
-        var req = makeRequest(.GET, "/data.json", head);
-        var res = makeResponse();
-        const handled = try ziez.staticHandle(&req, &res, .{
-            .root = ".zig-cache/test-static-2",
-            .prefix = "/",
-            .etag = true,
-        });
-        try std.testing.expect(handled);
-        try std.testing.expectEqual(@as(u16, 304), res.status_code);
+    if (comptime opts.with_static) {
+        mkdirZ(".zig-cache/test-static-2");
+        try writeFileZ(".zig-cache/test-static-2/data.json", "{\"ok\":true}");
+        defer {
+            deleteFileZ(".zig-cache/test-static-2/data.json");
+            rmdirZ(".zig-cache/test-static-2");
+        }
+        var etag_value: [64]u8 = undefined;
+        var etag_len: usize = 0;
+        {
+            var req = makeRequest(.GET, "/data.json", "GET /data.json HTTP/1.1\r\n\r\n");
+            var res = makeResponse();
+            const handled = try ziez.staticHandle(&req, &res, .{ .root = ".zig-cache/test-static-2", .prefix = "/", .etag = true });
+            try std.testing.expect(handled);
+            try std.testing.expectEqual(@as(u16, 200), res.status_code);
+            const etag = responseHeader(&res, "ETag") orelse unreachable;
+            @memcpy(etag_value[0..etag.len], etag);
+            etag_len = etag.len;
+        }
+        {
+            var head_buf: [256]u8 = undefined;
+            const head = try std.fmt.bufPrint(&head_buf, "GET /data.json HTTP/1.1\r\nIf-None-Match: {s}\r\n\r\n", .{etag_value[0..etag_len]});
+            var req = makeRequest(.GET, "/data.json", head);
+            var res = makeResponse();
+            const handled = try ziez.staticHandle(&req, &res, .{ .root = ".zig-cache/test-static-2", .prefix = "/", .etag = true });
+            try std.testing.expect(handled);
+            try std.testing.expectEqual(@as(u16, 304), res.status_code);
+        }
     }
 }
 
@@ -171,16 +156,14 @@ test "Static: ETag round-trip returns 304 Not Modified" {
 // ---------------------------------------------------------------------------
 
 test "Static: rejects path traversal attempt" {
-    mkdirZ(".zig-cache/test-static-3");
-    defer rmdirZ(".zig-cache/test-static-3");
-
-    var req = makeRequest(.GET, "/static/../../../etc/passwd", "GET /static/../../../etc/passwd HTTP/1.1\r\n\r\n");
-    var res = makeResponse();
-    const handled = try ziez.staticHandle(&req, &res, .{
-        .root = ".zig-cache/test-static-3",
-        .prefix = "/static",
-    });
-    try std.testing.expect(!handled);
+    if (comptime opts.with_static) {
+        mkdirZ(".zig-cache/test-static-3");
+        defer rmdirZ(".zig-cache/test-static-3");
+        var req = makeRequest(.GET, "/static/../../../etc/passwd", "GET /static/../../../etc/passwd HTTP/1.1\r\n\r\n");
+        var res = makeResponse();
+        const handled = try ziez.staticHandle(&req, &res, .{ .root = ".zig-cache/test-static-3", .prefix = "/static" });
+        try std.testing.expect(!handled);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -188,22 +171,19 @@ test "Static: rejects path traversal attempt" {
 // ---------------------------------------------------------------------------
 
 test "Static: dotfile deny returns 403 Forbidden" {
-    mkdirZ(".zig-cache/test-static-4");
-    try writeFileZ(".zig-cache/test-static-4/.env", "SECRET=hunter2");
-    defer {
-        deleteFileZ(".zig-cache/test-static-4/.env");
-        rmdirZ(".zig-cache/test-static-4");
+    if (comptime opts.with_static) {
+        mkdirZ(".zig-cache/test-static-4");
+        try writeFileZ(".zig-cache/test-static-4/.env", "SECRET=hunter2");
+        defer {
+            deleteFileZ(".zig-cache/test-static-4/.env");
+            rmdirZ(".zig-cache/test-static-4");
+        }
+        var req = makeRequest(.GET, "/.env", "GET /.env HTTP/1.1\r\n\r\n");
+        var res = makeResponse();
+        const handled = try ziez.staticHandle(&req, &res, .{ .root = ".zig-cache/test-static-4", .prefix = "/", .dotfiles = .deny });
+        try std.testing.expect(handled);
+        try std.testing.expectEqual(@as(u16, 403), res.status_code);
     }
-
-    var req = makeRequest(.GET, "/.env", "GET /.env HTTP/1.1\r\n\r\n");
-    var res = makeResponse();
-    const handled = try ziez.staticHandle(&req, &res, .{
-        .root = ".zig-cache/test-static-4",
-        .prefix = "/",
-        .dotfiles = .deny,
-    });
-    try std.testing.expect(handled);
-    try std.testing.expectEqual(@as(u16, 403), res.status_code);
 }
 
 // ---------------------------------------------------------------------------
@@ -211,22 +191,19 @@ test "Static: dotfile deny returns 403 Forbidden" {
 // ---------------------------------------------------------------------------
 
 test "Static: dotfile ignore returns false (pass-through)" {
-    mkdirZ(".zig-cache/test-static-5");
-    try writeFileZ(".zig-cache/test-static-5/.htaccess", "Options -Indexes");
-    defer {
-        deleteFileZ(".zig-cache/test-static-5/.htaccess");
-        rmdirZ(".zig-cache/test-static-5");
+    if (comptime opts.with_static) {
+        mkdirZ(".zig-cache/test-static-5");
+        try writeFileZ(".zig-cache/test-static-5/.htaccess", "Options -Indexes");
+        defer {
+            deleteFileZ(".zig-cache/test-static-5/.htaccess");
+            rmdirZ(".zig-cache/test-static-5");
+        }
+        var req = makeRequest(.GET, "/.htaccess", "GET /.htaccess HTTP/1.1\r\n\r\n");
+        var res = makeResponse();
+        const handled = try ziez.staticHandle(&req, &res, .{ .root = ".zig-cache/test-static-5", .prefix = "/", .dotfiles = .ignore });
+        try std.testing.expect(!handled);
+        try std.testing.expect(!res.sent);
     }
-
-    var req = makeRequest(.GET, "/.htaccess", "GET /.htaccess HTTP/1.1\r\n\r\n");
-    var res = makeResponse();
-    const handled = try ziez.staticHandle(&req, &res, .{
-        .root = ".zig-cache/test-static-5",
-        .prefix = "/",
-        .dotfiles = .ignore,
-    });
-    try std.testing.expect(!handled);
-    try std.testing.expect(!res.sent);
 }
 
 // ---------------------------------------------------------------------------
@@ -234,20 +211,18 @@ test "Static: dotfile ignore returns false (pass-through)" {
 // ---------------------------------------------------------------------------
 
 test "Static: prefix mismatch returns false" {
-    mkdirZ(".zig-cache/test-static-6");
-    try writeFileZ(".zig-cache/test-static-6/app.js", "console.log(1)");
-    defer {
-        deleteFileZ(".zig-cache/test-static-6/app.js");
-        rmdirZ(".zig-cache/test-static-6");
+    if (comptime opts.with_static) {
+        mkdirZ(".zig-cache/test-static-6");
+        try writeFileZ(".zig-cache/test-static-6/app.js", "console.log(1)");
+        defer {
+            deleteFileZ(".zig-cache/test-static-6/app.js");
+            rmdirZ(".zig-cache/test-static-6");
+        }
+        var req = makeRequest(.GET, "/other/app.js", "GET /other/app.js HTTP/1.1\r\n\r\n");
+        var res = makeResponse();
+        const handled = try ziez.staticHandle(&req, &res, .{ .root = ".zig-cache/test-static-6", .prefix = "/assets" });
+        try std.testing.expect(!handled);
     }
-
-    var req = makeRequest(.GET, "/other/app.js", "GET /other/app.js HTTP/1.1\r\n\r\n");
-    var res = makeResponse();
-    const handled = try ziez.staticHandle(&req, &res, .{
-        .root = ".zig-cache/test-static-6",
-        .prefix = "/assets",
-    });
-    try std.testing.expect(!handled);
 }
 
 // ---------------------------------------------------------------------------
@@ -255,20 +230,18 @@ test "Static: prefix mismatch returns false" {
 // ---------------------------------------------------------------------------
 
 test "Static: POST method is ignored (pass-through)" {
-    mkdirZ(".zig-cache/test-static-7");
-    try writeFileZ(".zig-cache/test-static-7/file.txt", "hello");
-    defer {
-        deleteFileZ(".zig-cache/test-static-7/file.txt");
-        rmdirZ(".zig-cache/test-static-7");
+    if (comptime opts.with_static) {
+        mkdirZ(".zig-cache/test-static-7");
+        try writeFileZ(".zig-cache/test-static-7/file.txt", "hello");
+        defer {
+            deleteFileZ(".zig-cache/test-static-7/file.txt");
+            rmdirZ(".zig-cache/test-static-7");
+        }
+        var req = makeRequest(.POST, "/file.txt", "POST /file.txt HTTP/1.1\r\n\r\n");
+        var res = makeResponse();
+        const handled = try ziez.staticHandle(&req, &res, .{ .root = ".zig-cache/test-static-7", .prefix = "/" });
+        try std.testing.expect(!handled);
     }
-
-    var req = makeRequest(.POST, "/file.txt", "POST /file.txt HTTP/1.1\r\n\r\n");
-    var res = makeResponse();
-    const handled = try ziez.staticHandle(&req, &res, .{
-        .root = ".zig-cache/test-static-7",
-        .prefix = "/",
-    });
-    try std.testing.expect(!handled);
 }
 
 // ---------------------------------------------------------------------------
@@ -276,25 +249,20 @@ test "Static: POST method is ignored (pass-through)" {
 // ---------------------------------------------------------------------------
 
 test "Static: Cache-Control header reflects max_age config" {
-    mkdirZ(".zig-cache/test-static-8");
-    try writeFileZ(".zig-cache/test-static-8/style.css", "body{}");
-    defer {
-        deleteFileZ(".zig-cache/test-static-8/style.css");
-        rmdirZ(".zig-cache/test-static-8");
+    if (comptime opts.with_static) {
+        mkdirZ(".zig-cache/test-static-8");
+        try writeFileZ(".zig-cache/test-static-8/style.css", "body{}");
+        defer {
+            deleteFileZ(".zig-cache/test-static-8/style.css");
+            rmdirZ(".zig-cache/test-static-8");
+        }
+        var req = makeRequest(.GET, "/style.css", "GET /style.css HTTP/1.1\r\n\r\n");
+        var res = makeResponse();
+        _ = try ziez.staticHandle(&req, &res, .{ .root = ".zig-cache/test-static-8", .prefix = "/", .max_age = 3600, .etag = false });
+        const cc = responseHeader(&res, "Cache-Control");
+        try std.testing.expect(cc != null);
+        try std.testing.expect(std.mem.indexOf(u8, cc.?, "3600") != null);
     }
-
-    var req = makeRequest(.GET, "/style.css", "GET /style.css HTTP/1.1\r\n\r\n");
-    var res = makeResponse();
-    _ = try ziez.staticHandle(&req, &res, .{
-        .root = ".zig-cache/test-static-8",
-        .prefix = "/",
-        .max_age = 3600,
-        .etag = false,
-    });
-
-    const cc = responseHeader(&res, "Cache-Control");
-    try std.testing.expect(cc != null);
-    try std.testing.expect(std.mem.indexOf(u8, cc.?, "3600") != null);
 }
 
 // ---------------------------------------------------------------------------
@@ -302,16 +270,14 @@ test "Static: Cache-Control header reflects max_age config" {
 // ---------------------------------------------------------------------------
 
 test "Static: missing file returns false (pass-through)" {
-    mkdirZ(".zig-cache/test-static-9");
-    defer rmdirZ(".zig-cache/test-static-9");
-
-    var req = makeRequest(.GET, "/does-not-exist.txt", "GET /does-not-exist.txt HTTP/1.1\r\n\r\n");
-    var res = makeResponse();
-    const handled = try ziez.staticHandle(&req, &res, .{
-        .root = ".zig-cache/test-static-9",
-        .prefix = "/",
-    });
-    try std.testing.expect(!handled);
+    if (comptime opts.with_static) {
+        mkdirZ(".zig-cache/test-static-9");
+        defer rmdirZ(".zig-cache/test-static-9");
+        var req = makeRequest(.GET, "/does-not-exist.txt", "GET /does-not-exist.txt HTTP/1.1\r\n\r\n");
+        var res = makeResponse();
+        const handled = try ziez.staticHandle(&req, &res, .{ .root = ".zig-cache/test-static-9", .prefix = "/" });
+        try std.testing.expect(!handled);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -319,12 +285,12 @@ test "Static: missing file returns false (pass-through)" {
 // ---------------------------------------------------------------------------
 
 test "App.serveStatic stores config in router" {
-    var app = ziez.init(std.testing.allocator);
-    defer app.deinit();
-
-    app.serveStatic(.{ .root = "./public", .prefix = "/assets" });
-
-    try std.testing.expectEqual(@as(usize, 1), app.router.static_configs.items.len);
-    try std.testing.expectEqualStrings("./public", app.router.static_configs.items[0].root);
-    try std.testing.expectEqualStrings("/assets", app.router.static_configs.items[0].prefix);
+    if (comptime opts.with_static) {
+        var app = ziez.init(std.testing.allocator);
+        defer app.deinit();
+        app.serveStatic(.{ .root = "./public", .prefix = "/assets" });
+        try std.testing.expectEqual(@as(usize, 1), app.router.static_configs.items.len);
+        try std.testing.expectEqualStrings("./public", app.router.static_configs.items[0].root);
+        try std.testing.expectEqualStrings("/assets", app.router.static_configs.items[0].prefix);
+    }
 }

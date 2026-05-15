@@ -1,5 +1,5 @@
 const std = @import("std");
-const tls = @import("../tls.zig");
+const tls = @import("mod.zig");
 
 const Certificate = std.crypto.Certificate;
 const AlgorithmCategory = Certificate.AlgorithmCategory;
