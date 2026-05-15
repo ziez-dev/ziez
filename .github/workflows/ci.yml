@@ -69,8 +69,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - distro: debian
-            container: debian:latest
           - distro: fedora
             container: fedora:latest
           - distro: arch
@@ -87,7 +85,7 @@ jobs:
       - name: Bootstrap AWS Linux
         if: matrix.distro == 'aws'
         run: |
-          dnf install -y xz
+          dnf install -y git xz
 
       - name: Install Zig
         uses: mlugg/setup-zig@v2
