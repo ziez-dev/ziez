@@ -108,9 +108,13 @@ const form = req.body_form();
 const name = form.get("name").?;
 
 // Multipart
-var mp = req.body_multipart().?;
-defer mp.deinit();
-const file = mp.getFile("upload").?;
+var upload = try req.saveMultipart(.{
+    .root_dir = "./uploads",
+    .file_fields = &.{"upload"},
+    .allowed_types = &.{"image/*", "application/pdf"},
+});
+defer upload.deinit();
+const file = upload.getFile("upload").?;
 
 // Query params
 const page = req.query_get("page");

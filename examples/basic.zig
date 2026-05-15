@@ -90,14 +90,19 @@ pub fn main() !void {
     // POST /upload - multipart/form-data
     app.post("/upload", struct {
         fn handler(req: *ziez.Request, res: *ziez.Response) !void {
-            var mp = req.body_multipart() orelse return error.UnsupportedMediaType;
-            defer mp.deinit();
+            var upload = try req.saveMultipart(.{
+                .root_dir = ".zig-cache/example-uploads",
+                .file_fields = &.{"file"},
+                .allowed_types = &.{ "text/*", "image/*" },
+            });
+            defer upload.deinit();
 
-            const file = mp.getFile("file") orelse return error.BadRequest;
+            const file = upload.getFile("file") orelse return error.BadRequest;
             res.json(.{
-                .filename = file.filename orelse "unknown",
-                .size = file.data.len,
-                .content_type = file.content_type orelse "application/octet-stream",
+                .filename = file.original_name,
+                .path = file.path,
+                .size = file.size,
+                .content_type = file.content_type,
             });
         }
     }.handler);

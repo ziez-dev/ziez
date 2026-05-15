@@ -357,6 +357,7 @@ fn processRequests(
         };
         req.assignRequestId(next_request_id.fetchAdd(1, .monotonic));
         req.tls = is_tls;
+        req.server_request = &http_req;
         if (is_tls and sni != null) {
             req.tls_version = "TLSv1.3";
             req.client_cert_subject = if (tls_context != null and tls_context.?.client_auth != .none) null else null;
@@ -410,16 +411,17 @@ fn processRequests(
             }
         }
 
-        // Read body if present
-        readBody(allocator, &http_req, &req) catch |e| {
-            logger.errorFields(.{
-                .component = "listener",
-                .event = "body_read_failed",
-                .req_id = req.request_id,
-                .path = req.path,
-                .@"error" = @errorName(e),
-            }, "body read failed");
-        };
+        if (!isMultipartRequest(&req)) {
+            readBody(allocator, &http_req, &req) catch |e| {
+                logger.errorFields(.{
+                    .component = "listener",
+                    .event = "body_read_failed",
+                    .req_id = req.request_id,
+                    .path = req.path,
+                    .@"error" = @errorName(e),
+                }, "body read failed");
+            };
+        }
 
         var res = Response.init(allocator);
         res.server_request = &http_req;
@@ -453,6 +455,11 @@ fn processRequests(
 
         req.deinit();
     }
+}
+
+fn isMultipartRequest(req: *const Request) bool {
+    const ct = req.content_type() orelse return false;
+    return std.mem.startsWith(u8, ct, "multipart/form-data");
 }
 
 fn buildRedirectLocation(

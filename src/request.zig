@@ -13,6 +13,8 @@ pub const Request = struct {
     allocator: std.mem.Allocator,
     head_buffer: []const u8,
     owns_body: bool,
+    server_request: ?*http.Server.Request = null,
+    multipart_consumed: bool = false,
     owned_query_values: [util.QueryParams.MAX_ENTRIES]?[]const u8 = [_]?[]const u8{null} ** util.QueryParams.MAX_ENTRIES,
     request_id_storage: [32]u8 = undefined,
     cookies: util.Cookies,
@@ -48,6 +50,8 @@ pub const Request = struct {
             .allocator = allocator,
             .head_buffer = head_buffer,
             .owns_body = false,
+            .server_request = null,
+            .multipart_consumed = false,
             .cookies = .{},
             .cookies_parsed = false,
         };
@@ -139,6 +143,30 @@ pub const Request = struct {
         return multipart.Multipart.parse(self.allocator, self.body_raw, boundary) catch return null;
     }
 
+    pub fn saveMultipart(self: *Request, config: multipart.UploadConfig) !multipart.MultipartUpload {
+        if (self.multipart_consumed) return error.BadRequest;
+
+        const ct = self.content_type() orelse return error.UnsupportedMediaType;
+        if (!std.mem.startsWith(u8, ct, "multipart/form-data")) return error.UnsupportedMediaType;
+
+        const boundary = multipart.Multipart.extractBoundary(ct) orelse return error.BadRequest;
+        self.multipart_consumed = true;
+
+        if (self.body_raw.len > 0) {
+            var reader = SliceReader{ .data = self.body_raw };
+            return multipart.saveUpload(self.allocator, &reader, self.body_raw.len, boundary, config);
+        }
+
+        const server_request = self.server_request orelse return error.BadRequest;
+        const content_length = server_request.head.content_length orelse return error.LengthRequired;
+        if (content_length == 0) return error.BadRequest;
+
+        var body_reader_buf: [4096]u8 = undefined;
+        const body_reader = server_request.readerExpectNone(&body_reader_buf);
+        var reader = HttpBodyReader{ .inner = body_reader };
+        return multipart.saveUpload(self.allocator, &reader, @intCast(content_length), boundary, config);
+    }
+
     /// Get a cookie value by name. Lazily parses Cookie header on first call.
     pub fn cookie(self: *Request, name: []const u8) ?[]const u8 {
         if (!self.cookies_parsed) {
@@ -163,5 +191,26 @@ pub const Request = struct {
 
     pub fn scheme(self: *const Request) []const u8 {
         return if (self.tls) "https" else "http";
+    }
+};
+
+const SliceReader = struct {
+    data: []const u8,
+    pos: usize = 0,
+
+    pub fn take(self: *SliceReader, max_bytes: usize) ![]const u8 {
+        const remaining = self.data.len - self.pos;
+        const n = @min(remaining, max_bytes);
+        const chunk = self.data[self.pos .. self.pos + n];
+        self.pos += n;
+        return chunk;
+    }
+};
+
+const HttpBodyReader = struct {
+    inner: *std.Io.Reader,
+
+    pub fn take(self: *HttpBodyReader, max_bytes: usize) ![]const u8 {
+        return self.inner.*.take(max_bytes);
     }
 };
