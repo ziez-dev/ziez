@@ -69,6 +69,11 @@ jobs:
             container: amazonlinux:2023
 
     steps:
+      - name: Bootstrap Alpine
+        if: matrix.distro == 'alpine'
+        run: |
+          apk add --no-cache git tar xz musl-dev build-base gcc
+
       - name: Bootstrap AWS Linux
         if: matrix.distro == 'aws'
         run: |
@@ -91,11 +96,6 @@ jobs:
         if: matrix.distro == 'arch'
         run: |
           pacman -Sy --noconfirm glibc base-devel gcc
-
-      - name: Install dependencies (Alpine)
-        if: matrix.distro == 'alpine'
-        run: |
-          apk add --no-cache musl-dev build-base gcc tar xz
 
       - name: Install dependencies (AWS)
         if: matrix.distro == 'aws'
