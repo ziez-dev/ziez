@@ -13,6 +13,7 @@ jobs:
   test-linux:
     name: Test (${{ matrix.name }})
     runs-on: ${{ matrix.runner }}
+    container: ${{ matrix.container }}
     strategy:
       fail-fast: false
       matrix:
