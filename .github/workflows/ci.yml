@@ -98,7 +98,7 @@ jobs:
         if: matrix.distro == 'debian'
         run: |
           apt-get update
-          apt-get install -y libc-dev
+          apt-get install -y libc-dev xz-utils
 
       - name: Install dependencies (Fedora)
         if: matrix.distro == 'fedora'
