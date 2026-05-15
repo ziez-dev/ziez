@@ -79,13 +79,13 @@ jobs:
             container: amazonlinux:2023
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
       - name: Bootstrap AWS Linux
         if: matrix.distro == 'aws'
         run: |
-          dnf install -y git xz
+          dnf install -y git tar xz
+
+      - name: Checkout code
+        uses: actions/checkout@v4
 
       - name: Install Zig
         uses: mlugg/setup-zig@v2
