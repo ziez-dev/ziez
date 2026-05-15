@@ -1,28 +1,5 @@
 const std = @import("std");
-
-// ── POSIX shim ────────────────────────────────────────────────────────────────
-// Zig 0.16 moved all Dir/File I/O behind std.Io (async).
-// We use raw POSIX syscalls for synchronous template loading, matching env.zig.
-extern "c" fn close(fd: std.posix.fd_t) c_int;
-
-fn posixOpenZ(path: [*:0]const u8) std.posix.OpenError!std.posix.fd_t {
-    return std.posix.openatZ(std.posix.AT.FDCWD, path, .{ .ACCMODE = .RDONLY }, 0);
-}
-
-fn posixReadAll(allocator: std.mem.Allocator, fd: std.posix.fd_t, max: usize) ![]u8 {
-    var buf = std.ArrayList(u8).empty;
-    errdefer buf.deinit(allocator);
-
-    var tmp: [8192]u8 = undefined;
-    var total: usize = 0;
-    while (total < max) {
-        const n = std.posix.read(fd, &tmp) catch return error.ReadFailed;
-        if (n == 0) break;
-        try buf.appendSlice(allocator, tmp[0..n]);
-        total += n;
-    }
-    return buf.toOwnedSlice(allocator);
-}
+const platform = @import("../core/platform.zig");
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -97,13 +74,15 @@ pub const TemplateEngine = struct {
             self.config.extension,
         }) catch return error.PathTooLong;
 
-        const fd = posixOpenZ(file_path) catch |err| {
+        var io_impl = std.Io.Threaded.init_single_threaded;
+        const io = io_impl.io();
+        const fd = std.Io.Dir.cwd().openFile(io, std.mem.sliceTo(file_path, 0), .{ .mode = .read_only }) catch |err| {
             std.debug.print("ziez/template: cannot open template '{s}': {}\n", .{ std.mem.sliceTo(file_path, 0), err });
             return err;
         };
-        defer _ = close(fd);
+        defer fd.close(io);
 
-        const content = try posixReadAll(self.allocator, fd, 4 * 1024 * 1024);
+        const content = try platform.readFileAll(self.allocator, fd, io, 4 * 1024 * 1024);
 
         if (self.config.cache) {
             const key = try self.allocator.dupe(u8, name);

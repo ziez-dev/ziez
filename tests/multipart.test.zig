@@ -2,44 +2,37 @@ const std = @import("std");
 const ziez = @import("ziez");
 const opts = @import("ziez_options");
 
-extern "c" fn close(fd: std.posix.fd_t) c_int;
-
-const linux = std.os.linux;
-
 fn mkdirZ(path: [*:0]const u8) void {
-    _ = linux.mkdirat(linux.AT.FDCWD, path, 0o755);
+    var io_impl = std.Io.Threaded.init_single_threaded;
+    const io = io_impl.io();
+    std.Io.Dir.cwd().createDirPath(io, std.mem.sliceTo(path, 0)) catch {};
 }
 
 fn deleteFileZ(path: [*:0]const u8) void {
-    _ = linux.unlinkat(linux.AT.FDCWD, path, 0);
+    var io_impl = std.Io.Threaded.init_single_threaded;
+    const io = io_impl.io();
+    std.Io.Dir.cwd().deleteFile(io, std.mem.sliceTo(path, 0)) catch {};
 }
 
 fn rmdirZ(path: [*:0]const u8) void {
-    _ = linux.unlinkat(linux.AT.FDCWD, path, linux.AT.REMOVEDIR);
+    var io_impl = std.Io.Threaded.init_single_threaded;
+    const io = io_impl.io();
+    std.Io.Dir.cwd().deleteDir(io, std.mem.sliceTo(path, 0)) catch {};
 }
 
 fn readFileAlloc(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
-    const zpath = try allocator.dupeZ(u8, path);
-    defer allocator.free(zpath);
+    var io_impl = std.Io.Threaded.init_single_threaded;
+    const io = io_impl.io();
+    const file = try std.Io.Dir.cwd().openFile(io, path, .{ .mode = .read_only });
+    defer file.close(io);
 
-    const fd = try std.posix.openatZ(
-        std.posix.AT.FDCWD,
-        zpath,
-        .{ .ACCMODE = .RDONLY },
-        0,
-    );
-    defer _ = close(fd);
-
-    var out = std.ArrayList(u8).empty;
-    errdefer out.deinit(allocator);
-
-    var tmp: [256]u8 = undefined;
-    while (true) {
-        const n = try std.posix.read(fd, &tmp);
-        if (n == 0) break;
-        try out.appendSlice(allocator, tmp[0..n]);
+    const stat = try file.stat(io);
+    var out = try allocator.alloc(u8, @as(usize, @intCast(stat.size)));
+    const n = try file.readPositionalAll(io, out, 0);
+    if (n != out.len) {
+        out = try allocator.realloc(out, n);
     }
-    return out.toOwnedSlice(allocator);
+    return out;
 }
 
 fn makeMultipartRequest(body: []const u8, content_type: []const u8) ziez.Request {

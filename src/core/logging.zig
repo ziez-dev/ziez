@@ -436,21 +436,9 @@ pub const Logger = struct {
     }
 
     fn wallTimestampMs() i64 {
-        if (builtin.os.tag == .windows) {
-            // Windows-specific implementation
-            const win = std.os.windows;
-            var ft: win.FILETIME = undefined;
-            win.kernel32.GetSystemTimeAsFileTime(&ft);
-            const ft_int = (@as(u64, @intCast(ft.dwHighDateTime)) << 32) | @as(u64, ft.dwLowDateTime);
-            // Convert 100-nanosecond intervals to milliseconds since Unix epoch
-            const unix_epoch_windows_ticks = 116444736000000000;
-            return @as(i64, @intCast((ft_int - unix_epoch_windows_ticks) / 10000));
-        } else {
-            // POSIX implementation
-            var ts: std.c.timespec = undefined;
-            if (std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts) != 0) return 0;
-            return @as(i64, @intCast(ts.sec)) * 1000 + @divTrunc(@as(i64, @intCast(ts.nsec)), 1_000_000);
-        }
+        var io_impl = std.Io.Threaded.init_single_threaded;
+        const io = io_impl.io();
+        return std.Io.Timestamp.toMilliseconds(std.Io.Clock.real.now(io));
     }
 
     fn matchesPattern(path: []const []const u8, pattern: []const u8) bool {

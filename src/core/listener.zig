@@ -3,6 +3,7 @@ const opts = @import("ziez_options");
 const http = std.http;
 const net = std.Io.net;
 const logging = @import("logging.zig");
+const platform = @import("platform.zig");
 const Router = @import("router.zig").Router;
 const Request = @import("request.zig").Request;
 const Response = @import("response.zig").Response;
@@ -310,7 +311,7 @@ fn handleTlsConnection(
     const tls_context = lease.context();
 
     var entropy: [TlsMod.server_entropy_len]u8 = undefined;
-    fillRandomBytes(&entropy);
+    platform.fillRandomBytes(&entropy);
 
     var tls_server = TlsMod.server.init(
         &net_reader.interface,
@@ -682,22 +683,7 @@ fn readBody(
 }
 
 fn monotonicTimeNs() i128 {
-    var ts: std.c.timespec = undefined;
-    if (std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts) != 0) return 0;
-    return @as(i128, @intCast(ts.sec)) * 1_000_000_000 + @as(i128, @intCast(ts.nsec));
-}
-
-/// Fill a byte buffer with cryptographically secure random bytes.
-/// Uses the OS getrandom syscall directly.
-fn fillRandomBytes(buf: []u8) void {
-    var offset: usize = 0;
-    while (offset < buf.len) {
-        const n = std.os.linux.getrandom(
-            @ptrCast(buf.ptr + offset),
-            buf.len - offset,
-            0,
-        );
-        if (n == 0) unreachable;
-        offset += n;
-    }
+    var io_impl = std.Io.Threaded.init_single_threaded;
+    const io = io_impl.io();
+    return @as(i128, @intCast(std.Io.Clock.awake.now(io).nanoseconds));
 }

@@ -478,7 +478,7 @@ fn algoMatches(cert_algo: std.crypto.Certificate.Parsed.PubKeyAlgo, key_algo: st
 }
 
 fn currentUnixSeconds() i64 {
-    var ts: std.c.timespec = undefined;
-    if (std.c.clock_gettime(std.c.CLOCK.REALTIME, &ts) != 0) return 0;
-    return @intCast(ts.sec);
+    var io_impl = std.Io.Threaded.init_single_threaded;
+    const io = io_impl.io();
+    return @as(i64, @intCast(@divTrunc(std.Io.Clock.real.now(io).nanoseconds, std.time.ns_per_s)));
 }

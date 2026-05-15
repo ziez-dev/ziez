@@ -22,42 +22,34 @@ const opts = @import("ziez_options");
 // POSIX helpers — write / delete files without std.Io
 // ---------------------------------------------------------------------------
 
-extern "c" fn close(fd: std.posix.fd_t) c_int;
-extern "c" fn write(fd: std.posix.fd_t, buf: [*]const u8, count: usize) isize;
-
-const linux = std.os.linux;
-
 /// Write `content` to the file at `path` (NUL-terminated), creating it.
 fn writeFileZ(path: [*:0]const u8, content: []const u8) !void {
-    const fd = try std.posix.openatZ(
-        std.posix.AT.FDCWD,
-        path,
-        .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true },
-        0o644,
-    );
-    defer _ = close(fd);
-
-    var written: usize = 0;
-    while (written < content.len) {
-        const n = write(fd, content.ptr + written, content.len - written);
-        if (n <= 0) return error.WriteFailed;
-        written += @intCast(n);
-    }
+    var io_impl = std.Io.Threaded.init_single_threaded;
+    const io = io_impl.io();
+    const file = try std.Io.Dir.cwd().createFile(io, std.mem.sliceTo(path, 0), .{ .read = false });
+    defer file.close(io);
+    try file.writePositionalAll(io, content, 0);
 }
 
 /// Delete a file by NUL-terminated path.
 fn deleteFileZ(path: [*:0]const u8) void {
-    _ = linux.unlinkat(linux.AT.FDCWD, path, 0);
+    var io_impl = std.Io.Threaded.init_single_threaded;
+    const io = io_impl.io();
+    std.Io.Dir.cwd().deleteFile(io, std.mem.sliceTo(path, 0)) catch {};
 }
 
 /// Create a directory (best-effort; ignores EEXIST).
 fn mkdirZ(path: [*:0]const u8) void {
-    _ = linux.mkdirat(linux.AT.FDCWD, path, 0o755);
+    var io_impl = std.Io.Threaded.init_single_threaded;
+    const io = io_impl.io();
+    std.Io.Dir.cwd().createDirPath(io, std.mem.sliceTo(path, 0)) catch {};
 }
 
 /// Delete a directory.
 fn rmdirZ(path: [*:0]const u8) void {
-    _ = linux.unlinkat(linux.AT.FDCWD, path, linux.AT.REMOVEDIR);
+    var io_impl = std.Io.Threaded.init_single_threaded;
+    const io = io_impl.io();
+    std.Io.Dir.cwd().deleteDir(io, std.mem.sliceTo(path, 0)) catch {};
 }
 
 // ---------------------------------------------------------------------------

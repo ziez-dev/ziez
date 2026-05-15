@@ -1,8 +1,4 @@
 const std = @import("std");
-const builtin = @import("builtin");
-
-extern "c" fn close(fd: std.posix.fd_t) c_int;
-extern "c" fn write(fd: std.posix.fd_t, buf: [*]const u8, count: usize) isize;
 
 var next_upload_id: std.atomic.Value(u64) = .init(1);
 
@@ -223,17 +219,16 @@ const SaveContext = struct {
     }
 
     fn cleanupFiles(self: *SaveContext) void {
-        if (comptime builtin.os.tag != .linux) return;
         for (self.created_paths.items) |path| {
-            const zpath = self.allocator.dupeZ(u8, path) catch continue;
-            defer self.allocator.free(zpath);
-            _ = std.os.linux.unlinkat(std.os.linux.AT.FDCWD, zpath, 0);
+            var io_impl = std.Io.Threaded.init_single_threaded;
+            const io = io_impl.io();
+            std.Io.Dir.cwd().deleteFile(io, path) catch {};
         }
     }
 };
 
 const CurrentFile = struct {
-    fd: std.posix.fd_t,
+    file: std.Io.File,
     path: []u8,
     field_name: []u8,
     original_name: []u8,
@@ -376,7 +371,7 @@ fn appendBodyChunk(
     if (current_file) |file| {
         const next_size = file.size + chunk.len;
         if (next_size > ctx.config.max_file_size) return error.PayloadTooLarge;
-        try writeAll(file.fd, chunk);
+        try writeAll(file.file, chunk);
         file.size = next_size;
         return;
     }
@@ -413,18 +408,12 @@ fn openCurrentFile(
     const full_path = try std.fmt.allocPrint(ctx.allocator, "{s}/{s}", .{ dir_path, final_name });
     errdefer ctx.allocator.free(full_path);
 
-    const zpath = try ctx.allocator.dupeZ(u8, full_path);
-    defer ctx.allocator.free(zpath);
-
-    const fd = try std.posix.openatZ(
-        std.posix.AT.FDCWD,
-        zpath,
-        .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true },
-        0o644,
-    );
+    var io_impl = std.Io.Threaded.init_single_threaded;
+    const io = io_impl.io();
+    const file = try std.Io.Dir.cwd().createFile(io, full_path, .{ .read = false });
 
     return .{
-        .fd = fd,
+        .file = file,
         .path = full_path,
         .field_name = try ctx.allocator.dupe(u8, field_name),
         .original_name = try ctx.allocator.dupe(u8, original_name),
@@ -434,18 +423,16 @@ fn openCurrentFile(
 }
 
 fn closeCurrentFile(file: *CurrentFile) void {
-    _ = close(file.fd);
+    var io_impl = std.Io.Threaded.init_single_threaded;
+    const io = io_impl.io();
+    file.file.close(io);
 }
 
 fn cleanupCurrentFile(ctx: *SaveContext, file: *CurrentFile) void {
     closeCurrentFile(file);
-    const zpath = ctx.allocator.dupeZ(u8, file.path) catch null;
-    if (zpath) |owned_zpath| {
-        defer ctx.allocator.free(owned_zpath);
-        if (comptime builtin.os.tag == .linux) {
-            _ = std.os.linux.unlinkat(std.os.linux.AT.FDCWD, owned_zpath, 0);
-        }
-    }
+    var io_impl = std.Io.Threaded.init_single_threaded;
+    const io = io_impl.io();
+    std.Io.Dir.cwd().deleteFile(io, file.path) catch {};
     ctx.allocator.free(file.path);
     ctx.allocator.free(file.field_name);
     ctx.allocator.free(file.original_name);
@@ -453,13 +440,10 @@ fn cleanupCurrentFile(ctx: *SaveContext, file: *CurrentFile) void {
     ctx.allocator.free(file.content_type);
 }
 
-fn writeAll(fd: std.posix.fd_t, content: []const u8) !void {
-    var written: usize = 0;
-    while (written < content.len) {
-        const n = write(fd, content.ptr + written, content.len - written);
-        if (n <= 0) return error.WriteFailed;
-        written += @intCast(n);
-    }
+fn writeAll(file: std.Io.File, content: []const u8) !void {
+    var io_impl = std.Io.Threaded.init_single_threaded;
+    const io = io_impl.io();
+    try file.writePositionalAll(io, content, 0);
 }
 
 fn buildTargetDir(allocator: std.mem.Allocator, config: UploadConfig) ![]u8 {
@@ -472,34 +456,18 @@ fn buildTargetDir(allocator: std.mem.Allocator, config: UploadConfig) ![]u8 {
     return allocator.dupe(u8, trimTrailingSlashes(config.root_dir));
 }
 
-fn ensureDirRecursive(allocator: std.mem.Allocator, dir_path: []const u8) !void {
+fn ensureDirRecursive(_: std.mem.Allocator, dir_path: []const u8) !void {
     if (dir_path.len == 0) return;
-    var current = std.ArrayList(u8).empty;
-    defer current.deinit(allocator);
-
-    if (dir_path[0] == '/') try current.append(allocator, '/');
-    var it = std.mem.tokenizeScalar(u8, dir_path, '/');
-    while (it.next()) |segment| {
-        if (segment.len == 0) continue;
-        if (current.items.len > 0 and current.items[current.items.len - 1] != '/') {
-            try current.append(allocator, '/');
-        }
-        try current.appendSlice(allocator, segment);
-        try mkdirIfMissing(allocator, current.items);
-    }
+    var io_impl = std.Io.Threaded.init_single_threaded;
+    const io = io_impl.io();
+    std.Io.Dir.cwd().createDirPath(io, dir_path) catch {};
 }
 
 fn mkdirIfMissing(allocator: std.mem.Allocator, path: []const u8) !void {
-    const zpath = try allocator.dupeZ(u8, path);
-    defer allocator.free(zpath);
-
-    if (comptime builtin.os.tag != .linux) return error.UnsupportedPlatform;
-
-    const rc = std.os.linux.mkdirat(std.os.linux.AT.FDCWD, zpath, 0o755);
-    switch (std.os.linux.errno(rc)) {
-        .SUCCESS, .EXIST => {},
-        else => return error.AccessDenied,
-    }
+    _ = allocator;
+    var io_impl = std.Io.Threaded.init_single_threaded;
+    const io = io_impl.io();
+    std.Io.Dir.cwd().createDirPath(io, path) catch {};
 }
 
 fn trimTrailingSlashes(input: []const u8) []const u8 {

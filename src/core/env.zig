@@ -1,6 +1,5 @@
 const std = @import("std");
-
-extern "c" fn close(fd: std.posix.fd_t) c_int;
+const platform = @import("platform.zig");
 
 pub const Env = struct {
     vars: std.StringHashMap([]const u8),
@@ -87,25 +86,9 @@ pub const Env = struct {
 };
 
 fn readFile(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const zpath = std.fmt.bufPrintZ(&path_buf, "{s}", .{path}) catch return error.FileNotFound;
-
-    const fd = std.posix.openatZ(
-        std.posix.AT.FDCWD,
-        zpath.ptr,
-        .{ .ACCMODE = .RDONLY },
-        0,
-    ) catch return error.FileNotFound;
-    defer _ = close(fd);
-
-    var buf = std.ArrayList(u8).empty;
-    errdefer buf.deinit(allocator);
-    var tmp: [4096]u8 = undefined;
-    while (true) {
-        const n = std.posix.read(fd, &tmp) catch return error.FileNotFound;
-        if (n == 0) break;
-        try buf.appendSlice(allocator, tmp[0..n]);
-        if (buf.items.len > 1024 * 1024) break;
-    }
-    return buf.toOwnedSlice(allocator);
+    var io_impl = std.Io.Threaded.init_single_threaded;
+    const io = io_impl.io();
+    const file = try platform.openFileReadOnly(io, path);
+    defer file.close(io);
+    return platform.readFileAll(allocator, file, io, 1024 * 1024);
 }

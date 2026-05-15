@@ -1,62 +1,7 @@
 const std = @import("std");
-const builtin = @import("builtin");
 const Request = @import("../core/request.zig").Request;
 const Response = @import("../core/response.zig").Response;
-
-// ── POSIX shim ────────────────────────────────────────────────────────────────
-// Zig 0.16 moved all Dir/File I/O behind std.Io (async). For synchronous
-// serving in handlers we fall back to raw POSIX syscalls, matching env.zig.
-extern "c" fn close(fd: std.posix.fd_t) c_int;
-
-/// FileStat holds the fields we need for ETag generation.
-const FileStat = struct {
-    mtime_ns: i64,
-    size: u64,
-    is_dir: bool,
-};
-
-/// Open a file by NUL-terminated absolute or relative path.
-/// Returns POSIX fd or error.
-fn posixOpen(path: [*:0]const u8) std.posix.OpenError!std.posix.fd_t {
-    return std.posix.openatZ(std.posix.AT.FDCWD, path, .{ .ACCMODE = .RDONLY }, 0);
-}
-
-/// Stat a file descriptor using `fstatx` (Linux) or `fstat` (others).
-fn posixStat(fd: std.posix.fd_t) !FileStat {
-    if (comptime builtin.os.tag == .linux) {
-        const linux = std.os.linux;
-        var sx: linux.Statx = undefined;
-        const mask: linux.STATX = .{ .SIZE = true, .MTIME = true, .TYPE = true, .MODE = true };
-        const rc = linux.statx(fd, "", linux.AT.EMPTY_PATH, mask, &sx);
-        if (linux.errno(rc) != .SUCCESS) return error.StatFailed;
-        const is_dir = (sx.mode & linux.S.IFMT) == linux.S.IFDIR;
-        return .{
-            .mtime_ns = @as(i64, sx.mtime.sec) * std.time.ns_per_s + sx.mtime.nsec,
-            .size = sx.size,
-            .is_dir = is_dir,
-        };
-    } else {
-        // Non-Linux — not the primary target for this framework
-        return error.UnsupportedPlatform;
-    }
-}
-
-/// Read the full contents of `fd` into a heap-allocated buffer.
-/// Caller must free the returned slice.
-fn posixReadAll(allocator: std.mem.Allocator, fd: std.posix.fd_t, max: usize) ![]u8 {
-    var buf = std.ArrayList(u8).empty;
-    errdefer buf.deinit(allocator);
-
-    var tmp: [8192]u8 = undefined;
-    var total: usize = 0;
-    while (total < max) {
-        const n = std.posix.read(fd, &tmp) catch return error.ReadFailed;
-        if (n == 0) break;
-        try buf.appendSlice(allocator, tmp[0..n]);
-        total += n;
-    }
-    return buf.toOwnedSlice(allocator);
-}
+const platform = @import("../core/platform.zig");
 
 // Cached error-code from the last statx call for directory detection
 const ENOTDIR: i32 = 20;
@@ -174,7 +119,10 @@ pub fn handle(req: *Request, res: *Response, config: StaticConfig) !bool {
     }
 
     // ── Open file ─────────────────────────────────────────────────────────
-    const fd = posixOpen(file_path) catch |err| switch (err) {
+    var io_impl = std.Io.Threaded.init_single_threaded;
+    const io = io_impl.io();
+
+    const fd = platform.openFileReadOnly(io, std.mem.sliceTo(file_path, 0)) catch |err| switch (err) {
         error.IsDir => blk: {
             // Try appending the index file
             if (config.index.len == 0) return false;
@@ -194,15 +142,15 @@ pub fn handle(req: *Request, res: *Response, config: StaticConfig) !bool {
             // Patch the active file_path in-place for MIME type lookup
             @memcpy(path_buf[0..idx_buf.len], &idx_buf);
 
-            break :blk posixOpen(idx_path) catch return false;
+            break :blk platform.openFileReadOnly(io, std.mem.sliceTo(idx_path, 0)) catch return false;
         },
         error.FileNotFound, error.NotDir, error.AccessDenied => return false,
         else => return false,
     };
-    defer _ = close(fd);
+    defer fd.close(io);
 
     // ── Stat ──────────────────────────────────────────────────────────────
-    const stat = posixStat(fd) catch return false;
+    const stat = platform.statFile(fd, io) catch return false;
 
     // If we opened a directory fd somehow, bail
     if (stat.is_dir) return false;
@@ -233,7 +181,7 @@ pub fn handle(req: *Request, res: *Response, config: StaticConfig) !bool {
     }
 
     // ── Read and send ─────────────────────────────────────────────────────
-    const content = posixReadAll(res.allocator, fd, 64 * 1024 * 1024) catch return false;
+    const content = platform.readFileAll(res.allocator, fd, io, 64 * 1024 * 1024) catch return false;
     defer res.allocator.free(content);
 
     _ = res.status(200);
