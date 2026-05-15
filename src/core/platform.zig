@@ -34,14 +34,19 @@ pub fn statFile(file: std.Io.File, io: std.Io) !FileStat {
 }
 
 pub fn readFileAll(allocator: std.mem.Allocator, file: std.Io.File, io: std.Io, max: usize) ![]u8 {
-    const stat = try statFile(file, io);
-    const limit = @min(@as(usize, @intCast(stat.size)), max);
-    var buf = try allocator.alloc(u8, limit);
-    const n = try file.readPositionalAll(io, buf, 0);
-    if (n != buf.len) {
-        buf = try allocator.realloc(buf, n);
+    var list = std.ArrayList(u8).empty;
+    errdefer list.deinit(allocator);
+    var pos: u64 = 0;
+    while (list.items.len < max) {
+        const remaining = max - list.items.len;
+        const want = @min(remaining, 8192);
+        var tmp: [8192]u8 = undefined;
+        const n = try file.readPositionalAll(io, tmp[0..want], pos);
+        if (n == 0) break;
+        try list.appendSlice(allocator, tmp[0..n]);
+        pos += n;
     }
-    return buf;
+    return list.toOwnedSlice(allocator);
 }
 
 pub fn fillRandomBytes(buf: []u8) void {

@@ -143,16 +143,16 @@ jobs:
         run: zig build -Dtarget=${{ matrix.target }}
 
   test-freebsd:
-    name: Test on freebsd ${{ matrix.arch }}
-    runs-on: ubuntu-latest
+    name: Zig Test (${{ matrix.arch }} - FreeBSD)
+    runs-on: ${{ matrix.os-runner }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - arch: x86_64
-            release: "14.2"
+            os-runner: ubuntu-latest
           - arch: aarch64
-            release: "14.2"
+            os-runner: ubuntu-24.04-arm
 
     steps:
       - name: Checkout code
@@ -161,10 +161,11 @@ jobs:
       - name: Run tests in FreeBSD VM
         uses: vmactions/freebsd-vm@v1
         with:
-          release: ${{ matrix.release }}
-          usesh: true
+          release: "14.2"
+          architecture: ${{ matrix.arch }}
           prepare: |
-            pkg install -y zig ca_root_nss
+            pkg update
+            pkg install -y git cmake ninja llvm18 zstd libxml2 ca_root_nss lang/zig
           run: |
             git config --global http.sslCAInfo /usr/local/share/certs/ca-root-nss.crt
             zig build test --summary all
@@ -179,8 +180,6 @@ jobs:
         include:
           - arch: x86_64
             runner: windows-latest
-          - arch: aarch64
-            runner: windows-11-arm
 
     steps:
       - name: Checkout code
