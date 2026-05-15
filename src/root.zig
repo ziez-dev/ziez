@@ -79,6 +79,21 @@ pub const LogSink = @import("logging.zig").Sink;
 pub const UAParser = @import("ua_parser.zig");
 pub const ua_parser = @import("ua_parser.zig");
 
+pub const StreamWriter = @import("stream.zig").StreamWriter;
+pub const NdjsonStreamWriter = @import("stream.zig").NdjsonStreamWriter;
+pub const SseStreamWriter = @import("stream.zig").SseStreamWriter;
+pub const CsvStreamWriter = @import("stream.zig").CsvStreamWriter;
+pub const JsonArrayStreamWriter = @import("stream.zig").JsonArrayStreamWriter;
+pub const StreamCallback = @import("stream.zig").StreamCallback;
+pub const NdjsonCallback = @import("stream.zig").NdjsonCallback;
+pub const SseCallback = @import("stream.zig").SseCallback;
+pub const CsvCallback = @import("stream.zig").CsvCallback;
+pub const JsonArrayCallback = @import("stream.zig").JsonArrayCallback;
+pub const CsvStreamConfig = @import("stream.zig").CsvStreamConfig;
+pub const FileStreamConfig = @import("response.zig").Response.FileStreamConfig;
+pub const parseRange = @import("stream.zig").parseRange;
+pub const ParsedRange = @import("stream.zig").ParsedRange;
+
 pub const tls = @import("tls.zig");
 pub const TlsConfig = tls.TlsConfig;
 pub const TlsContext = tls.TlsContext;

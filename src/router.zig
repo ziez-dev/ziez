@@ -178,7 +178,7 @@ pub const Router = struct {
                 }, "handler exit");
             }
 
-            if (!res.sent) {
+            if (!res.sent and !res.streaming) {
                 self.handleError(req, res, error.InternalServerError);
             }
             return;

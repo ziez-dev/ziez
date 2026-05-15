@@ -218,6 +218,29 @@ pub fn build(b: *std.Build) void {
     const ic_run_step = b.step("run-interceptor-pipe", "Run the interceptor & pipe example");
     ic_run_step.dependOn(&ic_run_cmd.step);
 
+    // Streaming example
+    const stream_exe_mod = b.createModule(.{
+        .root_source_file = b.path("examples/streaming.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "ziez", .module = ziez_mod },
+        },
+    });
+
+    const stream_example = b.addExecutable(.{
+        .name = "ziez-streaming",
+        .root_module = stream_exe_mod,
+    });
+    b.installArtifact(stream_example);
+
+    const stream_run_cmd = b.addRunArtifact(stream_example);
+    stream_run_cmd.step.dependOn(b.getInstallStep());
+    if (b.args) |args| stream_run_cmd.addArgs(args);
+
+    const stream_run_step = b.step("run-streaming", "Run the streaming example");
+    stream_run_step.dependOn(&stream_run_cmd.step);
+
     const test_step = b.step("test", "Run unit tests");
     const test_ua_step = b.step("test-ua", "Run UA parser tests only");
     const io = b.graph.io;

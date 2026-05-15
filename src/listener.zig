@@ -429,7 +429,7 @@ fn processRequests(
 
         router.handle(&req, &res);
 
-        if (!res.sent) {
+        if (!res.sent and !res.streaming) {
             res.status(500).json(.{ .@"error" = "internal server error" });
         }
 
