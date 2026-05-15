@@ -39,16 +39,6 @@ jobs:
         with:
           version: 0.16.0
 
-      - name: Cache Zig
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.zig
-            ~/.cache/zig
-          key: ${{ runner.os }}-zig-${{ hashFiles('**/*.zig') }}
-          restore-keys: |
-            ${{ runner.os }}-zig-
-
       - name: Install dependencies (Ubuntu/Debian)
         if: matrix.os == 'linux'
         run: |
@@ -92,16 +82,6 @@ jobs:
         with:
           version: 0.16.0
 
-      - name: Cache Zig
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.zig
-            ~/.cache/zig
-          key: ${{ runner.os }}-zig-${{ hashFiles('**/*.zig') }}
-          restore-keys: |
-            ${{ runner.os }}-zig-
-
       - name: Install dependencies (Fedora)
         if: matrix.distro == 'fedora'
         run: |
@@ -115,7 +95,7 @@ jobs:
       - name: Install dependencies (Alpine)
         if: matrix.distro == 'alpine'
         run: |
-          apk add --no-cache musl-dev build-base gcc
+          apk add --no-cache musl-dev build-base gcc tar xz
 
       - name: Install dependencies (AWS)
         if: matrix.distro == 'aws'
@@ -148,16 +128,6 @@ jobs:
         uses: mlugg/setup-zig@v2
         with:
           version: 0.16.0
-
-      - name: Cache Zig
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.zig
-            ~/.cache/zig
-          key: ${{ runner.os }}-zig-${{ hashFiles('**/*.zig') }}
-          restore-keys: |
-            ${{ runner.os }}-zig-
 
       - name: Install cross-compilation dependencies
         if: matrix.target == 'aarch64-linux-gnu'
