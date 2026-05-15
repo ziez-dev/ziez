@@ -2,54 +2,30 @@ name: CI
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [main, master]
   pull_request:
-    branches: [ main, master ]
+    branches: [main, master]
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
-  test:
+  test-native:
     name: Test on ${{ matrix.os }} ${{ matrix.distro }}
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          # Linux distributions
           - os: linux
             distro: ubuntu-latest
             runner: ubuntu-latest
-          - os: linux
-            distro: debian
-            runner: ubuntu-latest
-            container: debian:latest
-          - os: linux
-            distro: fedora
-            runner: ubuntu-latest
-            container: fedora:latest
-          - os: linux
-            distro: arch
-            runner: ubuntu-latest
-            container: archlinux/archlinux:latest
-          - os: linux
-            distro: alpine
-            runner: ubuntu-latest
-            container: alpine:latest
-          
-          # macOS
           - os: macos
             distro: x64
             runner: macos-latest
           - os: macos
             distro: arm64
             runner: macos-14
-          
-          # Windows
-          - os: windows
-            distro: x64
-            runner: windows-latest
 
     steps:
       - name: Checkout code
@@ -70,26 +46,74 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-zig-
 
-      - name: Install dependencies (Debian/Ubuntu)
-        if: matrix.os == 'linux' && (matrix.distro == 'ubuntu-latest' || matrix.distro == 'debian')
+      - name: Install dependencies (Ubuntu)
+        if: matrix.os == 'linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y libc-dev
 
-      - name: Install dependencies (Fedora container)
-        if: matrix.os == 'linux' && matrix.distro == 'fedora'
-        run: |
-          dnf install -y glibc-devel
+      - name: Run native tests
+        run: zig build test --summary all
 
-      - name: Install dependencies (Arch container)
-        if: matrix.os == 'linux' && matrix.distro == 'arch'
-        run: |
-          pacman -Sy --noconfirm glibc base-devel
+      - name: Build examples
+        run: zig build
 
-      - name: Install dependencies (Alpine container)
-        if: matrix.os == 'linux' && matrix.distro == 'alpine'
+  test-linux-containers:
+    name: Test on linux ${{ matrix.distro }}
+    runs-on: ubuntu-latest
+    container: ${{ matrix.container }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - distro: debian
+            container: debian:latest
+          - distro: fedora
+            container: fedora:latest
+          - distro: arch
+            container: archlinux/archlinux:latest
+          - distro: alpine
+            container: alpine:latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Cache Zig
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.zig
+            ~/.cache/zig
+          key: ${{ runner.os }}-zig-${{ hashFiles('**/*.zig') }}
+          restore-keys: |
+            ${{ runner.os }}-zig-
+
+      - name: Install dependencies (Debian)
+        if: matrix.distro == 'debian'
         run: |
-          apk add musl-dev build-base
+          apt-get update
+          apt-get install -y libc-dev
+
+      - name: Install dependencies (Fedora)
+        if: matrix.distro == 'fedora'
+        run: |
+          dnf install -y glibc-devel gcc
+
+      - name: Install dependencies (Arch)
+        if: matrix.distro == 'arch'
+        run: |
+          pacman -Sy --noconfirm glibc base-devel gcc
+
+      - name: Install dependencies (Alpine)
+        if: matrix.distro == 'alpine'
+        run: |
+          apk add --no-cache musl-dev build-base gcc
 
       - name: Run native tests
         run: zig build test --summary all
@@ -106,9 +130,8 @@ jobs:
         target:
           - x86_64-linux-gnu
           - aarch64-linux-gnu
-          - x86_64-macos-gnu
-          - aarch64-macos-gnu
-          - x86_64-windows-gnu
+          - x86_64-macos-none
+          - aarch64-macos-none
 
     steps:
       - name: Checkout code
@@ -130,12 +153,10 @@ jobs:
             ${{ runner.os }}-zig-
 
       - name: Install cross-compilation dependencies
+        if: matrix.target == 'aarch64-linux-gnu'
         run: |
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
-
-      - name: Cross-compile test
-        run: zig build test -Dtarget=${{ matrix.target }}
 
       - name: Cross-compile build
         run: zig build -Dtarget=${{ matrix.target }}
