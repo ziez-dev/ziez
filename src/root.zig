@@ -114,6 +114,9 @@ pub const CipherSuite = @import("tls/mod.zig").CipherSuite;
 pub const ClientCertInfo = @import("tls/mod.zig").ClientCertInfo;
 pub const RedirectHttpConfig = @import("tls/mod.zig").RedirectHttpConfig;
 
+pub const Plugin = @import("core/plugin.zig").Plugin;
+pub const makePlugin = @import("core/app.zig").makePlugin;
+
 pub fn init(allocator: std.mem.Allocator) App {
     return App.init(allocator);
 }

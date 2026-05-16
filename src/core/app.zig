@@ -4,11 +4,13 @@ const interceptor = @import("interceptor.zig");
 const log_mod = @import("logging.zig");
 const Router = @import("router.zig").Router;
 const listener = @import("listener.zig");
+const plugin_mod = @import("plugin.zig");
 
 pub const App = struct {
     router: Router,
     logger: log_mod.Logger,
     allocator: std.mem.Allocator,
+    plugins: std.ArrayListUnmanaged(plugin_mod.Plugin),
     // Type-erased compression — only set when user calls app.compress()
     conn_config: listener.ConnConfig,
     compress_free_fn: ?*const fn (*anyopaque, std.mem.Allocator) void,
@@ -30,6 +32,7 @@ pub const App = struct {
             .router = router,
             .logger = router.logger,
             .allocator = allocator,
+            .plugins = .empty,
             .conn_config = .{ .log_request_fn = listener.defaultLogRequestFn },
             .compress_free_fn = null,
             .tls_runtime = null,
@@ -45,6 +48,10 @@ pub const App = struct {
     }
 
     pub fn deinit(self: *App) void {
+        for (self.plugins.items) |p| {
+            if (p.deinit_fn) |deinit_fn| deinit_fn(p.ptr, self.allocator);
+        }
+        self.plugins.deinit(self.allocator);
         if (self.tls_runtime) |ptr| {
             if (self.tls_destroy_fn) |destroy| destroy(ptr);
             self.tls_runtime = null;
@@ -124,6 +131,50 @@ pub const App = struct {
 
     pub fn on_error(self: *App, handler: middleware.ErrorHandlerFn) void {
         self.router.setErrorHandler(handler);
+    }
+
+    /// Register a plugin. Plugins are installed immediately and activate before
+    /// any call to listen() — safe for non-HTTP use-cases (WS, ORM seeding, etc.).
+    ///
+    /// Pattern A — simple struct by value (no cleanup):
+    ///   The struct must declare `pub const plugin_name`, `pub const plugin_version`,
+    ///   and `pub fn install(self: *T, app: *App) !void`. Must NOT have `deinit`.
+    ///   app.plugin(MyPlugin{ .opt = "value" });
+    ///
+    /// Pattern B — stateful Plugin handle (with optional cleanup):
+    ///   Create via ziez.makePlugin() and pass the result.
+    ///   app.plugin(ziez.makePlugin("name", "1.0.0", T, ptr));
+    pub fn plugin(self: *App, p: anytype) void {
+        const T = @TypeOf(p);
+
+        if (T == plugin_mod.Plugin) {
+            p.install_fn(p.ptr, @ptrCast(self)) catch |e| {
+                std.debug.panic("ziez: plugin '{s}@{s}' install failed: {s}", .{
+                    p.name, p.version, @errorName(e),
+                });
+            };
+            if (p.deinit_fn != null) {
+                self.plugins.append(self.allocator, p) catch @panic("ziez: OOM registering plugin");
+            }
+            return;
+        }
+
+        comptime {
+            if (!@hasDecl(T, "plugin_name"))
+                @compileError("Plugin struct '" ++ @typeName(T) ++ "' must declare: pub const plugin_name = \"...\"; ");
+            if (!@hasDecl(T, "plugin_version"))
+                @compileError("Plugin struct '" ++ @typeName(T) ++ "' must declare: pub const plugin_version = \"...\"; ");
+            if (!@hasDecl(T, "install"))
+                @compileError("Plugin struct '" ++ @typeName(T) ++ "' must declare: pub fn install(self: *T, app: *App) !void");
+            if (@hasDecl(T, "deinit"))
+                @compileError("Plugin '" ++ @typeName(T) ++ "' has deinit() — it owns resources. Use ziez.makePlugin() and pass by pointer instead of by value.");
+        }
+        var copy = p;
+        copy.install(self) catch |e| {
+            std.debug.panic("ziez: plugin '{s}@{s}' install failed: {s}", .{
+                T.plugin_name, T.plugin_version, @errorName(e),
+            });
+        };
     }
 
     /// Enable rich request/response logging via the tracker module.
@@ -219,3 +270,36 @@ pub const App = struct {
         self.router.setTemplateEngine(engine);
     }
 };
+
+/// Create a type-erased Plugin handle for Pattern B (stateful plugins with cleanup).
+///
+/// T must have:
+///   pub fn install(self: *T, app: *App) !void
+/// Optionally:
+///   pub fn deinit(self: *T, alloc: std.mem.Allocator) void
+///
+/// The caller is responsible for keeping `ptr` alive until app.deinit() is called.
+pub fn makePlugin(name: []const u8, version: []const u8, comptime T: type, ptr: *T) plugin_mod.Plugin {
+    comptime {
+        if (!@hasDecl(T, "install"))
+            @compileError("Type '" ++ @typeName(T) ++ "' passed to makePlugin must have: pub fn install(self: *T, app: *App) !void");
+    }
+    const Wrapper = struct {
+        fn install(plugin_ptr: *anyopaque, app_ptr: *anyopaque) anyerror!void {
+            const self: *T = @ptrCast(@alignCast(plugin_ptr));
+            const app: *App = @ptrCast(@alignCast(app_ptr));
+            return self.install(app);
+        }
+        fn deinit_wrapper(plugin_ptr: *anyopaque, alloc: std.mem.Allocator) void {
+            const self: *T = @ptrCast(@alignCast(plugin_ptr));
+            self.deinit(alloc);
+        }
+    };
+    return .{
+        .name = name,
+        .version = version,
+        .ptr = ptr,
+        .install_fn = Wrapper.install,
+        .deinit_fn = if (@hasDecl(T, "deinit")) Wrapper.deinit_wrapper else null,
+    };
+}

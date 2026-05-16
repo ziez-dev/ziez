@@ -339,6 +339,23 @@ pub fn build(b: *std.Build) void {
         mp_run_step.dependOn(&mp_run_cmd.step);
     }
 
+    // Plugin example
+    {
+        const plug_exe_mod = b.createModule(.{
+            .root_source_file = b.path("examples/plugin.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "ziez", .module = ziez_mod }},
+        });
+        const plug_example = b.addExecutable(.{ .name = "ziez-plugin", .root_module = plug_exe_mod });
+        b.installArtifact(plug_example);
+        const plug_run_cmd = b.addRunArtifact(plug_example);
+        plug_run_cmd.step.dependOn(b.getInstallStep());
+        if (b.args) |args| plug_run_cmd.addArgs(args);
+        const plug_run_step = b.step("run-plugin", "Run the plugin system example");
+        plug_run_step.dependOn(&plug_run_cmd.step);
+    }
+
     // Tracker example
     {
         const tr_exe_mod = b.createModule(.{
