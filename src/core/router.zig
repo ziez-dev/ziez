@@ -38,6 +38,12 @@ pub const Router = struct {
     logger: logging.Logger,
     lifecycle_trace: bool = false,
 
+    pub fn initSilent(allocator: std.mem.Allocator) Router {
+        var r = Router.init(allocator);
+        r.logger.configure(.{ .sink = logging.Sink.noop() });
+        return r;
+    }
+
     pub fn init(allocator: std.mem.Allocator) Router {
         const logger = logging.Logger.init(allocator, .{});
         return .{

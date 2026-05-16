@@ -127,7 +127,7 @@ pub fn validateBodySchema(
             };
             const result = schema_mod.validate(req.allocator, body);
             if (!result.valid) {
-                res.status(422);
+                _ = res.status(422);
                 res.error_message = "Validation failed";
                 return error.UnprocessableEntity;
             }
@@ -151,7 +151,7 @@ pub fn validateBodyWithSchema(
             };
             const result = schema_mod.validateWithRules(req.allocator, body, rules);
             if (!result.valid) {
-                res.status(422);
+                _ = res.status(422);
                 res.error_message = "Validation failed";
                 return error.UnprocessableEntity;
             }
@@ -171,7 +171,7 @@ pub fn validateQuerySchema(
             const val: T = buildQuery(T, req);
             const result = schema_mod.validate(req.allocator, val);
             if (!result.valid) {
-                res.status(422);
+                _ = res.status(422);
                 res.error_message = "Validation failed";
                 return error.UnprocessableEntity;
             }
@@ -259,7 +259,7 @@ fn buildQuery(comptime T: type, req: *Request) T {
             }
         } else if (@typeInfo(field.type) == .optional) {
             @field(val, field.name) = null;
-        } else if (field.default_value) |dv| {
+        } else if (field.default_value_ptr) |dv| {
             const ptr: *const field.type = @ptrCast(@alignCast(dv));
             @field(val, field.name) = ptr.*;
         }

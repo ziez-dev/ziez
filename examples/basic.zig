@@ -4,10 +4,6 @@ const ziez = @import("ziez");
 pub fn main() !void {
     const allocator = std.heap.smp_allocator;
 
-    // Load .env (optional, won't error if file missing)
-    var env = try ziez.Env.load(allocator, ".env");
-    defer env.deinit();
-
     var threaded = std.Io.Threaded.init(allocator, .{});
     const io = threaded.io();
 
@@ -87,26 +83,6 @@ pub fn main() !void {
         }
     }.handler);
 
-    // POST /upload - multipart/form-data
-    app.post("/upload", struct {
-        fn handler(req: *ziez.Request, res: *ziez.Response) !void {
-            var upload = try req.saveMultipart(.{
-                .root_dir = ".zig-cache/example-uploads",
-                .file_fields = &.{"file"},
-                .allowed_types = &.{ "text/*", "image/*" },
-            });
-            defer upload.deinit();
-
-            const file = upload.getFile("file") orelse return error.BadRequest;
-            res.json(.{
-                .filename = file.original_name,
-                .path = file.path,
-                .size = file.size,
-                .content_type = file.content_type,
-            });
-        }
-    }.handler);
-
     // GET /admin - throw Forbidden
     app.get("/admin", struct {
         fn handler(_: *ziez.Request, _: *ziez.Response) !void {
@@ -135,11 +111,5 @@ pub fn main() !void {
         }
     }.handler);
 
-    // Start server - port from env or default 3000
-    const port = env.getInt("PORT", u16, 3000);
-    const host = env.getOr("HOST", "0.0.0.0");
-
-    var addr_buf: [64]u8 = undefined;
-    const address = std.fmt.bufPrint(&addr_buf, "{s}:{d}", .{ host, port }) catch unreachable;
-    try app.listen(io, address);
+    try app.listen(io, "0.0.0.0:3000");
 }

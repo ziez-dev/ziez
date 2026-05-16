@@ -410,23 +410,97 @@ pub fn build(b: *std.Build) void {
         }
     }
 
-    // Integration tests
+    // Integration tests (auto-discover tests/integrations/*.test.zig)
     const integration_step = b.step("integration", "Run integration tests");
-    const integration_mod = b.createModule(.{
-        .root_source_file = b.path("tests/integrations/basic.test.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "ziez", .module = ziez_mod },
-        },
-    });
 
-    const integration_test = b.addTest(.{
-        .root_module = integration_mod,
-    });
+    var integ_dir = b.build_root.handle.openDir(io, "tests/integrations", .{ .iterate = true }) catch null;
+    if (integ_dir) |*dir| {
+        defer dir.close(io);
+        var integ_walker = dir.walk(b.allocator) catch return;
+        defer integ_walker.deinit();
+        while (integ_walker.next(io) catch null) |entry| {
+            if (entry.kind != .file) continue;
+            if (!std.mem.endsWith(u8, entry.basename, ".test.zig")) continue;
+            const integ_path = std.fmt.allocPrint(b.allocator, "tests/integrations/{s}", .{entry.path}) catch continue;
+            const integ_mod = b.createModule(.{
+                .root_source_file = b.path(integ_path),
+                .target = target,
+                .optimize = optimize,
+                .imports = &.{.{ .name = "ziez", .module = ziez_mod }},
+            });
+            const integ_test = b.addTest(.{ .root_module = integ_mod });
+            const run_integ = b.addRunArtifact(integ_test);
+            integration_step.dependOn(&run_integ.step);
+        }
+    }
 
-    const run_integration = b.addRunArtifact(integration_test);
-    integration_step.dependOn(&run_integration.step);
+    // Env example
+    {
+        const env_exe_mod = b.createModule(.{
+            .root_source_file = b.path("examples/env.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "ziez", .module = ziez_mod }},
+        });
+        const env_example = b.addExecutable(.{ .name = "ziez-env", .root_module = env_exe_mod });
+        b.installArtifact(env_example);
+        const env_run_cmd = b.addRunArtifact(env_example);
+        env_run_cmd.step.dependOn(b.getInstallStep());
+        if (b.args) |args| env_run_cmd.addArgs(args);
+        const env_run_step = b.step("run-env", "Run the Env example");
+        env_run_step.dependOn(&env_run_cmd.step);
+    }
+
+    // Cookie example
+    {
+        const ck_exe_mod = b.createModule(.{
+            .root_source_file = b.path("examples/cookie.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "ziez", .module = ziez_mod }},
+        });
+        const ck_example = b.addExecutable(.{ .name = "ziez-cookie", .root_module = ck_exe_mod });
+        b.installArtifact(ck_example);
+        const ck_run_cmd = b.addRunArtifact(ck_example);
+        ck_run_cmd.step.dependOn(b.getInstallStep());
+        if (b.args) |args| ck_run_cmd.addArgs(args);
+        const ck_run_step = b.step("run-cookie", "Run the cookie example");
+        ck_run_step.dependOn(&ck_run_cmd.step);
+    }
+
+    // Validation example
+    {
+        const val_exe_mod = b.createModule(.{
+            .root_source_file = b.path("examples/validation.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "ziez", .module = ziez_mod }},
+        });
+        const val_example = b.addExecutable(.{ .name = "ziez-validation", .root_module = val_exe_mod });
+        b.installArtifact(val_example);
+        const val_run_cmd = b.addRunArtifact(val_example);
+        val_run_cmd.step.dependOn(b.getInstallStep());
+        if (b.args) |args| val_run_cmd.addArgs(args);
+        const val_run_step = b.step("run-validation", "Run the validation + schema + pipes example");
+        val_run_step.dependOn(&val_run_cmd.step);
+    }
+
+    // Logging example
+    {
+        const log_exe_mod = b.createModule(.{
+            .root_source_file = b.path("examples/logging.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "ziez", .module = ziez_mod }},
+        });
+        const log_example = b.addExecutable(.{ .name = "ziez-logging", .root_module = log_exe_mod });
+        b.installArtifact(log_example);
+        const log_run_cmd = b.addRunArtifact(log_example);
+        log_run_cmd.step.dependOn(b.getInstallStep());
+        if (b.args) |args| log_run_cmd.addArgs(args);
+        const log_run_step = b.step("run-logging", "Run the custom Logger + LogSink example");
+        log_run_step.dependOn(&log_run_cmd.step);
+    }
 }
 
 fn getCSources(arena: std.mem.Allocator, parent: std.Build.Cache.Directory, io: std.Io, dir_path: []const u8, allocator: std.mem.Allocator) [][]const u8 {

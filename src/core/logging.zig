@@ -18,6 +18,12 @@ pub const Sink = struct {
         return .{ .writeFn = stderrWrite };
     }
 
+    pub fn noop() Sink {
+        return .{ .writeFn = noopWrite };
+    }
+
+    fn noopWrite(_: ?*anyopaque, _: LogLevel, _: []const u8) void {}
+
     pub fn write(self: Sink, level: LogLevel, line: []const u8) void {
         self.writeFn(self.context, level, line);
     }
