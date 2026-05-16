@@ -71,6 +71,7 @@ test "Security: Helmet defaults are on for successful routes" {
     resetState();
     var router = ziez.Router.init(std.testing.allocator);
     defer router.deinit();
+    router.useSecurity(.{});
     router.get("/ok", okHandler);
 
     var req = makeRequest(.GET, "/ok", "GET /ok HTTP/1.1\r\n\r\n");
@@ -97,6 +98,7 @@ test "Security: Helmet defaults are on for successful routes" {
 test "Security: Helmet defaults are present on 404 and error responses" {
     var not_found_router = ziez.Router.init(std.testing.allocator);
     defer not_found_router.deinit();
+    not_found_router.useSecurity(.{});
 
     var not_found_req = makeRequest(.GET, "/missing", "GET /missing HTTP/1.1\r\n\r\n");
     var not_found_res = ziez.Response.init(std.testing.allocator);
@@ -107,6 +109,7 @@ test "Security: Helmet defaults are present on 404 and error responses" {
 
     var error_router = ziez.Router.init(std.testing.allocator);
     defer error_router.deinit();
+    error_router.useSecurity(.{});
     error_router.get("/err", errorHandler);
 
     var error_req = makeRequest(.GET, "/err", "GET /err HTTP/1.1\r\n\r\n");
@@ -172,6 +175,7 @@ test "Security: Helmet partial override merges with defaults" {
 test "Security: Helmet removes X-Powered-By when present" {
     var router = ziez.Router.init(std.testing.allocator);
     defer router.deinit();
+    router.useSecurity(.{});
     router.get("/ok", okHandler);
 
     var req = makeRequest(.GET, "/ok", "GET /ok HTTP/1.1\r\n\r\n");
@@ -187,6 +191,7 @@ test "Security: XSS strip sanitizes query values before handler" {
     resetState();
     var router = ziez.Router.init(std.testing.allocator);
     defer router.deinit();
+    router.useSecurity(.{});
     router.get("/search", queryHandler);
 
     var req = makeRequest(.GET, "/search", "GET /search?q=x HTTP/1.1\r\n\r\n");
@@ -204,6 +209,7 @@ test "Security: XSS strip sanitizes JSON string values before handler" {
     resetState();
     var router = ziez.Router.init(std.testing.allocator);
     defer router.deinit();
+    router.useSecurity(.{});
     router.post("/json", bodyHandler);
 
     var req = makeRequest(.POST, "/json", "POST /json HTTP/1.1\r\nContent-Type: application/json\r\n\r\n");
@@ -268,6 +274,7 @@ test "Security: XSS skips multipart body" {
 test "Security: Helmet headers are present on CORS preflight short-circuit" {
     var router = ziez.Router.init(std.testing.allocator);
     defer router.deinit();
+    router.useSecurity(.{});
     router.useCors(.{});
     router.post("/items", okHandler);
 
@@ -285,12 +292,11 @@ test "Security: Helmet headers are present on CORS preflight short-circuit" {
     try std.testing.expect(responseHeader(&res, "Access-Control-Allow-Origin") != null);
 }
 
-test "App.security stores global config" {
+test "App.security registers hook" {
     var app = ziez.init(std.testing.allocator);
     defer app.deinit();
 
     app.security(.{ .helmet = null, .xss = null });
 
-    try std.testing.expect(app.router.security_config.helmet == null);
-    try std.testing.expect(app.router.security_config.xss == null);
+    try std.testing.expectEqual(@as(usize, 1), app.router.hooks.items.len);
 }

@@ -188,3 +188,22 @@ pub fn handle(req: *Request, res: *Response, config: StaticConfig) !bool {
     res.sendBody(content);
     return true;
 }
+
+// ── Hook integration ──────────────────────────────────────────────────────────
+
+fn hookRun(ptr: *anyopaque, req: *Request, res: *Response) bool {
+    const config: *StaticConfig = @ptrCast(@alignCast(ptr));
+    const served = handle(req, res, config.*) catch return true;
+    if (served and res.sent) return false;
+    return true;
+}
+
+fn hookDeinit(ptr: *anyopaque, allocator: std.mem.Allocator) void {
+    allocator.destroy(@as(*StaticConfig, @ptrCast(@alignCast(ptr))));
+}
+
+pub fn asHook(allocator: std.mem.Allocator, config: StaticConfig) @import("../core/hook.zig").RequestHook {
+    const cfg = allocator.create(StaticConfig) catch @panic("ziez: OOM creating static hook");
+    cfg.* = config;
+    return .{ .ptr = cfg, .run = hookRun, .deinit = hookDeinit };
+}

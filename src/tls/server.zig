@@ -148,7 +148,7 @@ pub const Server = struct {
             return error.TlsNoMatchingKeyShare;
 
         // Generate server key pair and compute shared secret
-        const shared_secret = computeSharedSecret(options.entropy, key_share) catch
+        const ks_result = computeSharedSecret(options.entropy, key_share) catch
             return error.TlsDecryptFailure;
 
         // Build and send ServerHello
@@ -160,7 +160,7 @@ pub const Server = struct {
             session_id,
             negotiated_suite,
             key_share.group,
-            our_key_share_pubkey[0..our_key_share_pubkey_len],
+            ks_result.pubkey[0..ks_result.pubkey_len],
             &hello_buf,
         );
         var wrapped_hello_buf: [517]u8 = undefined;
@@ -188,7 +188,7 @@ pub const Server = struct {
                 input,
                 output,
                 client_hello,
-                shared_secret,
+                ks_result.shared,
                 server_hello_msg,
                 wrapped_server_hello,
                 ccs_msg,
@@ -201,7 +201,7 @@ pub const Server = struct {
                 input,
                 output,
                 client_hello,
-                shared_secret,
+                ks_result.shared,
                 server_hello_msg,
                 wrapped_server_hello,
                 ccs_msg,
@@ -214,7 +214,7 @@ pub const Server = struct {
                 input,
                 output,
                 client_hello,
-                shared_secret,
+                ks_result.shared,
                 server_hello_msg,
                 wrapped_server_hello,
                 ccs_msg,
@@ -343,12 +343,13 @@ fn doHandshake(
             return error.TlsDecryptFailure;
         defer allocator.free(signature);
 
-        const cert_verify_msg = buildCertificateVerify(scheme, signature);
-        handshake_cipher.transcript_hash.update(&cert_verify_msg);
+        var cert_verify_buf: [512]u8 = undefined;
+        const cert_verify_msg = buildCertificateVerify(scheme, signature, &cert_verify_buf);
+        handshake_cipher.transcript_hash.update(cert_verify_msg);
 
         const record = prepareHandshakeRecord(
             options.write_buffer,
-            &cert_verify_msg,
+            cert_verify_msg,
             pv.server_handshake_key,
             pv.server_handshake_iv,
             write_seq,
@@ -363,12 +364,13 @@ fn doHandshake(
     {
         const finished_hash = handshake_cipher.transcript_hash.peek();
         const finished_verify_data = tls.hmac(P.Hmac, &finished_hash, pv.server_finished_key);
-        const finished_msg = buildFinished(&finished_verify_data);
-        handshake_cipher.transcript_hash.update(&finished_msg);
+        var finished_buf: [64]u8 = undefined;
+        const finished_msg = buildFinished(&finished_verify_data, &finished_buf);
+        handshake_cipher.transcript_hash.update(finished_msg);
 
         const record = prepareHandshakeRecord(
             options.write_buffer,
-            &finished_msg,
+            finished_msg,
             pv.server_handshake_key,
             pv.server_handshake_iv,
             write_seq,
@@ -381,11 +383,13 @@ fn doHandshake(
 
     // Read client Finished
     var read_seq: u64 = 0;
+    var cleartext_buf: [tls.max_ciphertext_inner_record_len]u8 = undefined;
     const client_finished = readEncryptedRecord(
         input,
         read_seq,
         &handshake_cipher,
         suite_with,
+        &cleartext_buf,
     ) catch |err| return err;
     read_seq += 1;
 
@@ -408,23 +412,21 @@ fn doHandshake(
         return .{
             .input = input,
             .reader = .{
-                .buffer = options.read_buffer,
                 .vtable = &.{
-                    .stream = stream,
-                    .readVec = readVec,
+                    .stream = readerStream,
+                    .readVec = readerReadVec,
                 },
+                .buffer = options.read_buffer,
                 .seek = 0,
                 .end = 0,
             },
             .output = output,
             .writer = .{
-                .buffer = options.write_buffer,
                 .vtable = &.{
-                    .stream = stream,
-                    .writeVec = writeVec,
-                    .drain = drain,
+                    .drain = writerDrain,
                 },
-                .seek = 0,
+                .buffer = options.write_buffer,
+                .end = 0,
             },
             .alert = null,
             .tls_version = .tls_1_3,
@@ -452,28 +454,34 @@ fn doHandshake(
 
 // --- Key exchange ---
 
-var our_key_share_pubkey: [65]u8 = undefined;
-var our_key_share_pubkey_len: usize = 32;
+const SharedSecretResult = struct {
+    shared: [32]u8,
+    pubkey: [65]u8,
+    pubkey_len: usize,
+};
 
-fn computeSharedSecret(entropy: []const u8, key_share: handshake_mod.KeyShareEntry) ![32]u8 {
+fn computeSharedSecret(entropy: []const u8, key_share: handshake_mod.KeyShareEntry) !SharedSecretResult {
     switch (key_share.group) {
         // X25519
         0x001D => {
             const seed: [32]u8 = entropy[32..64].*;
             const kp = crypto.dh.X25519.KeyPair.generateDeterministic(seed) catch return error.InsufficientEntropy;
-            our_key_share_pubkey[0..32].* = kp.public_key;
-            our_key_share_pubkey_len = 32;
-            return crypto.dh.X25519.scalarmult(kp.secret_key, key_share.public_key[0..32].*) catch return error.InsufficientEntropy;
+            var result: SharedSecretResult = undefined;
+            result.pubkey[0..32].* = kp.public_key;
+            result.pubkey_len = 32;
+            result.shared = crypto.dh.X25519.scalarmult(kp.secret_key, key_share.public_key[0..32].*) catch return error.InsufficientEntropy;
+            return result;
         },
         // secp256r1
         0x0017 => {
             const secret_key: [32]u8 = entropy[32..64].*;
             const point = crypto.ecc.P256.basePoint.mul(secret_key, .big) catch return error.InsufficientEntropy;
             const affine_pub = point.affineCoordinates();
-            our_key_share_pubkey[0] = 0x04;
-            our_key_share_pubkey[1..33].* = affine_pub.x.toBytes(.big);
-            our_key_share_pubkey[33..65].* = affine_pub.y.toBytes(.big);
-            our_key_share_pubkey_len = 65;
+            var result: SharedSecretResult = undefined;
+            result.pubkey[0] = 0x04;
+            result.pubkey[1..33].* = affine_pub.x.toBytes(.big);
+            result.pubkey[33..65].* = affine_pub.y.toBytes(.big);
+            result.pubkey_len = 65;
 
             // Decode client's public key (uncompressed SEC1)
             if (key_share.public_key[0] != 0x04 or key_share.public_key.len != 65)
@@ -485,7 +493,8 @@ fn computeSharedSecret(entropy: []const u8, key_share: handshake_mod.KeyShareEnt
             const their_point = crypto.ecc.P256.fromSerializedAffineCoordinates(x, y, .big) catch return error.InsufficientEntropy;
             // For P256, ECDH shared secret = x_coordinate of (secret * their_public)
             const result_point = their_point.mul(secret_key, .big) catch return error.InsufficientEntropy;
-            return result_point.affineCoordinates().x.toBytes(.big);
+            result.shared = result_point.affineCoordinates().x.toBytes(.big);
+            return result;
         },
         else => return error.TlsNoMatchingKeyShare,
     }
@@ -505,22 +514,24 @@ fn buildCertificate(chain: [][]const u8) []const u8 {
     return &[_]u8{ 0x0b, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
 }
 
-fn buildCertificateVerify(scheme: tls.SignatureScheme, signature: []const u8) [4 + 2 + 2 + signature.len]u8 {
-    var msg: [4 + 2 + 2 + signature.len]u8 = undefined;
-    msg[0] = 0x0f; // HandshakeType.certificate_verify
-    std.mem.writeInt(u24, msg[1..4], @intCast(2 + 2 + signature.len), .big);
-    std.mem.writeInt(u16, msg[4..6], @intFromEnum(scheme), .big);
-    std.mem.writeInt(u16, msg[6..8], @intCast(signature.len), .big);
-    @memcpy(msg[8..], signature);
-    return msg;
+fn buildCertificateVerify(scheme: tls.SignatureScheme, signature: []const u8, buf: []u8) []u8 {
+    const total = 4 + 2 + 2 + signature.len;
+    std.debug.assert(buf.len >= total);
+    buf[0] = 0x0f;
+    std.mem.writeInt(u24, buf[1..4], @intCast(2 + 2 + signature.len), .big);
+    std.mem.writeInt(u16, buf[4..6], @intFromEnum(scheme), .big);
+    std.mem.writeInt(u16, buf[6..8], @intCast(signature.len), .big);
+    @memcpy(buf[8 .. 8 + signature.len], signature);
+    return buf[0..total];
 }
 
-fn buildFinished(verify_data: []const u8) [4 + verify_data.len]u8 {
-    var msg: [4 + verify_data.len]u8 = undefined;
-    msg[0] = 0x14; // HandshakeType.finished
-    std.mem.writeInt(u24, msg[1..4], @intCast(verify_data.len), .big);
-    @memcpy(msg[4..], verify_data);
-    return msg;
+fn buildFinished(verify_data: []const u8, buf: []u8) []u8 {
+    const total = 4 + verify_data.len;
+    std.debug.assert(buf.len >= total);
+    buf[0] = 0x14;
+    std.mem.writeInt(u24, buf[1..4], @intCast(verify_data.len), .big);
+    @memcpy(buf[4 .. 4 + verify_data.len], verify_data);
+    return buf[0..total];
 }
 
 // --- Record encryption/decryption ---
@@ -572,6 +583,7 @@ fn readEncryptedRecord(
     seq: u64,
     handshake_cipher: anytype,
     suite_with: tls.CipherSuite.With,
+    cleartext_buf: *[tls.max_ciphertext_inner_record_len]u8,
 ) ![]const u8 {
     // Read record header
     input.rebase(tls.max_ciphertext_record_len) catch return error.TlsConnectionTruncated;
@@ -594,44 +606,37 @@ fn readEncryptedRecord(
             const ciphertext = record_buffer[0..ciphertext_len];
             const auth_tag = record_buffer[ciphertext_len..][0..P.AEAD.tag_length];
 
-            var cleartext: [tls.max_ciphertext_inner_record_len]u8 = undefined;
-
             const nonce = computeNonce(pv.client_handshake_iv, seq, P.AEAD.nonce_length);
-            P.AEAD.decrypt(&cleartext, ciphertext, auth_tag.*, record_header, nonce, pv.client_handshake_key) catch
+            P.AEAD.decrypt(cleartext_buf, ciphertext, auth_tag.*, record_header, nonce, pv.client_handshake_key) catch
                 return error.TlsBadRecordMac;
 
             // Strip inner content type byte
             const cleartext_len = ciphertext_len;
-            return cleartext[0 .. cleartext_len - 1];
+            return cleartext_buf[0 .. cleartext_len - 1];
         },
     }
 }
 
-// --- Stream vtable functions ---
+// --- Stream vtable stub functions ---
 
-fn stream(context: *anyopaque, buffer: []u8, location: std.Io.Seek) std.Io.Reader.ReadError!usize {
-    _ = context;
-    _ = buffer;
-    _ = location;
+fn readerStream(r: *std.Io.Reader, w: *std.Io.Writer, limit: std.Io.Limit) std.Io.Reader.StreamError!usize {
+    _ = r;
+    _ = w;
+    _ = limit;
     return 0;
 }
 
-fn readVec(context: *anyopaque, iovs: []std.posix.iovec, location: std.Io.Seek) std.Io.Reader.ReadError!usize {
-    _ = context;
-    _ = iovs;
-    _ = location;
+fn readerReadVec(r: *std.Io.Reader, data: [][]u8) std.Io.Reader.Error!usize {
+    _ = r;
+    _ = data;
     return 0;
 }
 
-fn writeVec(context: *anyopaque, iovs: []std.posix.iovec_const) std.Io.Writer.Error!usize {
-    _ = context;
-    _ = iovs;
+fn writerDrain(w: *std.Io.Writer, data: []const []const u8, splat: usize) std.Io.Writer.Error!usize {
+    _ = w;
+    _ = data;
+    _ = splat;
     return 0;
-}
-
-fn drain(context: *anyopaque, n: usize) std.Io.Writer.Error!void {
-    _ = context;
-    _ = n;
 }
 
 fn assert(condition: bool, comptime message: []const u8) void {

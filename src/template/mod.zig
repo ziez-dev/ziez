@@ -224,3 +224,18 @@ pub const TemplateEngine = struct {
         }
     }
 };
+
+// ── Hook integration ──────────────────────────────────────────────────────────
+
+fn hookRun(ptr: *anyopaque, _: *@import("../core/request.zig").Request, res: *@import("../core/response.zig").Response) bool {
+    res.template_engine = ptr;
+    return true;
+}
+
+fn hookDeinit(_: *anyopaque, _: std.mem.Allocator) void {
+    // User owns the TemplateEngine; do not free it here.
+}
+
+pub fn asHook(engine: *TemplateEngine) @import("../core/hook.zig").RequestHook {
+    return .{ .ptr = engine, .run = hookRun, .deinit = hookDeinit };
+}

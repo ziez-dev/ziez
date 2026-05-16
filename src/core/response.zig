@@ -1,6 +1,5 @@
 const std = @import("std");
 const http = std.http;
-const compression = @import("../compression/mod.zig");
 const logging = @import("logging.zig");
 const util = @import("util.zig");
 const log = std.log.scoped(.ziez);
@@ -15,8 +14,9 @@ pub const Response = struct {
     sent: bool = false,
     server_request: ?*http.Server.Request = null,
     error_message: ?[]const u8 = null,
-    compression_config: ?compression.CompressionConfig = null,
-    template_engine: ?*@import("../template/mod.zig").TemplateEngine = null,
+    compression_config: ?*anyopaque = null,
+    compress_fn: ?*const fn (*anyopaque, []const u8, *Response) bool = null,
+    template_engine: ?*anyopaque = null,
     logger: ?logging.Logger = null,
     request_id: []const u8 = "",
     streaming: bool = false,
@@ -42,6 +42,8 @@ pub const Response = struct {
         self.sent = false;
         self.server_request = null;
         self.template_engine = null;
+        self.compress_fn = null;
+        self.compression_config = null;
         self.logger = null;
         self.request_id = "";
         self.streaming = false;
@@ -166,12 +168,22 @@ pub const Response = struct {
     }
 
     pub fn json(self: *Response, data: anytype) void {
-        const body = std.json.Stringify.valueAlloc(self.allocator, data, .{}) catch |e| {
-            self.logError("response", "json_stringify_failed", e);
-            self.status(500).sendBody("{\"error\":\"json stringify failed\"}");
+        // Try stack buffer first for small payloads
+        var stack_buf: [4096]u8 = undefined;
+        var fixed_writer = std.Io.Writer.fixed(&stack_buf);
+        std.json.Stringify.value(data, .{}, &fixed_writer) catch {
+            // Stack buffer too small — fall back to heap allocation
+            const body = std.json.Stringify.valueAlloc(self.allocator, data, .{}) catch |e| {
+                self.logError("response", "json_stringify_failed", e);
+                self.status(500).sendBody("{\"error\":\"json stringify failed\"}");
+                return;
+            };
+            defer self.allocator.free(body);
+            _ = self.set("content-type", "application/json");
+            self.sendBody(body);
             return;
         };
-        defer self.allocator.free(body);
+        const body = fixed_writer.buffered();
         _ = self.set("content-type", "application/json");
         self.sendBody(body);
     }
@@ -207,11 +219,12 @@ pub const Response = struct {
     }
 
     pub fn render(self: *Response, view: []const u8, context: anytype) void {
-        const engine = self.template_engine orelse {
+        const TemplateMod = @import("../template/mod.zig");
+        const engine: *TemplateMod.TemplateEngine = @ptrCast(@alignCast(self.template_engine orelse {
             self.logMessage(.@"error", "response", "template_engine_missing", "render failed");
             self.status(500).sendBody("{\"error\":\"template engine not configured\"}");
             return;
-        };
+        }));
 
         const result = engine.renderAlloc(self.allocator, view, context) catch |e| {
             self.logError("response", "render_failed", e);
@@ -260,22 +273,9 @@ pub const Response = struct {
         const req = self.server_request orelse return;
 
         // Attempt compression if configured
-        if (self.compression_config) |config| {
-            const content_type = self.getHeader("content-type");
-            const content_encoding = self.getHeader("content-encoding");
-
-            if (compression.shouldCompress(body, content_type, content_encoding, config)) {
-                const accept_encoding = self.getAcceptEncoding();
-                if (compression.selectAlgorithm(accept_encoding, config)) |algo| {
-                    if (compression.compressBody(self.allocator, body, algo, config.level)) |compressed| {
-                        _ = self.set("content-encoding", algo.encodingName());
-                        self.respondCompressed(req, compressed);
-                        self.allocator.free(compressed);
-                        return;
-                    } else |_| {
-                        // Compression failed — send uncompressed
-                    }
-                }
+        if (self.compress_fn) |compress_fn| {
+            if (self.compression_config) |cfg| {
+                if (compress_fn(cfg, body, self)) return;
             }
         }
 

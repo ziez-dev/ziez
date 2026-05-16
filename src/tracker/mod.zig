@@ -58,6 +58,21 @@ pub fn buildSummary(
     return summary;
 }
 
+/// Adapter called via LogRequestFn function pointer. Only compiled when app.useTracker() is called.
+pub fn logRequestFn(
+    logger: logging.Logger,
+    request_id: []const u8,
+    method: []const u8,
+    path: []const u8,
+    status: u16,
+    elapsed_ms: f64,
+    user_agent: ?[]const u8,
+    content_length: ?u64,
+) void {
+    const summary = buildSummary(request_id, method, path, status, elapsed_ms, user_agent, content_length, .{});
+    logRequestSummary(logger, summary);
+}
+
 pub fn logRequestSummary(logger: logging.Logger, summary: RequestSummary) void {
     logger.infoFields(.{
         .event = "request_completed",

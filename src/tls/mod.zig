@@ -482,3 +482,30 @@ fn currentUnixSeconds() i64 {
     const io = io_impl.io();
     return @as(i64, @intCast(@divTrunc(std.Io.Clock.real.now(io).nanoseconds, std.time.ns_per_s)));
 }
+
+// ── Type-erased adapter functions for DCE integration ────────────────────────
+
+pub fn createRuntimeFn(config_ptr: *anyopaque, allocator: std.mem.Allocator) anyerror!*anyopaque {
+    const config: *const TlsConfig = @ptrCast(@alignCast(config_ptr));
+    const runtime = try TlsRuntime.create(allocator, config.*);
+    return @ptrCast(runtime);
+}
+
+pub fn destroyRuntimeFn(runtime_ptr: *anyopaque) void {
+    const runtime: *TlsRuntime = @ptrCast(@alignCast(runtime_ptr));
+    runtime.destroy();
+}
+
+pub fn reloadRuntimeFn(runtime_ptr: *anyopaque, config_ptr: *anyopaque) anyerror!void {
+    const runtime: *TlsRuntime = @ptrCast(@alignCast(runtime_ptr));
+    const config: *const TlsConfig = @ptrCast(@alignCast(config_ptr));
+    try runtime.reload(config.*);
+}
+
+pub fn freeConfigFn(ptr: *anyopaque, allocator: std.mem.Allocator) void {
+    allocator.destroy(@as(*TlsConfig, @ptrCast(@alignCast(ptr))));
+}
+
+pub fn freeRedirectConfigFn(ptr: *anyopaque, allocator: std.mem.Allocator) void {
+    allocator.destroy(@as(*RedirectHttpConfig, @ptrCast(@alignCast(ptr))));
+}

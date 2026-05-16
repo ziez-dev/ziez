@@ -64,45 +64,18 @@ fn signEcdsa(
 ) ![]const u8 {
     if (msg_hash.len != expected_hash_len) return error.InvalidHashLength;
 
-    // ECDSA signature: DER-encoded SEQUENCE { INTEGER r, INTEGER s }
-    const sig = std.crypto.ecdsa.EcdsaP256Sha256.sign(key.secret_key, msg_hash.*);
-    const r = sig.r.toBytes();
-    const s = sig.s.toBytes();
+    const EcdsaP256 = std.crypto.sign.ecdsa.EcdsaP256Sha256;
+    const secret_key = EcdsaP256.SecretKey{ .bytes = key.secret_key };
+    const public_key = EcdsaP256.PublicKey{
+        .p = std.crypto.ecc.P256.fromSec1(&key.public_key) catch return error.InvalidKey,
+    };
+    const kp = EcdsaP256.KeyPair{ .secret_key = secret_key, .public_key = public_key };
 
-    // DER encode: SEQUENCE { INTEGER r, INTEGER s }
-    // Each INTEGER may need a leading 0x00 if the high bit is set
-    const r_len = if (r[0] >= 0x80) r.len + 1 else r.len;
-    const s_len = if (s[0] >= 0x80) s.len + 1 else s.len;
-    const inner_len = 2 + r_len + 2 + s_len;
-    const total_len = 2 + inner_len;
+    const sig = kp.sign(msg_hash, null) catch return error.InvalidKey;
+    var der_buf: [EcdsaP256.Signature.der_encoded_length_max]u8 = undefined;
+    const der = sig.toDer(&der_buf);
 
-    const result = try allocator.alloc(u8, total_len);
-    var pos: usize = 0;
-
-    result[pos] = 0x30;
-    pos += 1;
-    pos += writeDerLength(result[pos..], inner_len);
-
-    result[pos] = 0x02;
-    pos += 1;
-    pos += writeDerLength(result[pos..], r_len);
-    if (r[0] >= 0x80) {
-        result[pos] = 0x00;
-        pos += 1;
-    }
-    @memcpy(result[pos .. pos + r.len], &r);
-    pos += r.len;
-
-    result[pos] = 0x02;
-    pos += 1;
-    pos += writeDerLength(result[pos..], s_len);
-    if (s[0] >= 0x80) {
-        result[pos] = 0x00;
-        pos += 1;
-    }
-    @memcpy(result[pos .. pos + s.len], &s);
-
-    return result[0..pos];
+    return allocator.dupe(u8, der);
 }
 
 fn signEcdsaP384(
@@ -123,11 +96,9 @@ fn signEd25519(
     key: *const tls.Ed25519Key,
     msg_hash: []const u8,
 ) ![]const u8 {
-    // Ed25519 signing takes the message directly, not a pre-hashed value.
-    // For TLS 1.3 CertificateVerify with Ed25519, the context string +
-    // transcript hash is signed directly.
+    const sig = key.key_pair.sign(msg_hash, null) catch return error.InvalidKey;
     const result = try allocator.alloc(u8, 64);
-    std.crypto.sign.Ed25519.sign(result, msg_hash, key.key_pair);
+    @memcpy(result, &sig.toBytes());
     return result;
 }
 

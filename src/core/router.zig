@@ -1,15 +1,11 @@
 const std = @import("std");
-const opts = @import("ziez_options");
 const util = @import("util.zig");
 const Request = @import("request.zig").Request;
 const Response = @import("response.zig").Response;
 const middleware = @import("middleware.zig");
 const interceptor = @import("interceptor.zig");
 const exceptions = @import("exceptions.zig");
-const CorsMod = if (opts.with_cors) @import("../cors/mod.zig") else struct {};
-const SecurityMod = if (opts.with_security) @import("../security/mod.zig") else struct {};
-const StaticMod = if (opts.with_static) @import("../static/mod.zig") else struct {};
-const TemplateMod = if (opts.with_template) @import("../template/mod.zig") else struct {};
+const hook_mod = @import("hook.zig");
 const logging = @import("logging.zig");
 
 pub const Route = struct {
@@ -26,14 +22,19 @@ pub const Router = struct {
     head_routes: std.ArrayList(Route),
     options_routes: std.ArrayList(Route),
     all_routes: std.ArrayList(Route),
+    static_get: std.StringHashMap(Route),
+    static_post: std.StringHashMap(Route),
+    static_put: std.StringHashMap(Route),
+    static_delete: std.StringHashMap(Route),
+    static_patch: std.StringHashMap(Route),
+    static_head: std.StringHashMap(Route),
+    static_options: std.StringHashMap(Route),
+    static_all: std.StringHashMap(Route),
     mw: middleware.MiddlewareList,
     allocator: std.mem.Allocator,
     error_handler: ?middleware.ErrorHandlerFn,
     global_interceptors: std.ArrayList(interceptor.InterceptorFn),
-    cors_config: if (opts.with_cors) ?CorsMod.CorsConfig else void,
-    security_config: if (opts.with_security) SecurityMod.SecurityConfig else void,
-    static_configs: if (opts.with_static) std.ArrayList(StaticMod.StaticConfig) else void,
-    template_engine: if (opts.with_template) ?*TemplateMod.TemplateEngine else void,
+    hooks: std.ArrayListUnmanaged(hook_mod.RequestHook),
     logger: logging.Logger,
     lifecycle_trace: bool = false,
 
@@ -48,14 +49,19 @@ pub const Router = struct {
             .head_routes = .empty,
             .options_routes = .empty,
             .all_routes = .empty,
+            .static_get = .init(allocator),
+            .static_post = .init(allocator),
+            .static_put = .init(allocator),
+            .static_delete = .init(allocator),
+            .static_patch = .init(allocator),
+            .static_head = .init(allocator),
+            .static_options = .init(allocator),
+            .static_all = .init(allocator),
             .mw = middleware.MiddlewareList.init(allocator),
             .allocator = allocator,
             .error_handler = null,
             .global_interceptors = .empty,
-            .cors_config = if (opts.with_cors) null else {},
-            .security_config = if (opts.with_security) .{} else {},
-            .static_configs = if (opts.with_static) .empty else {},
-            .template_engine = if (opts.with_template) null else {},
+            .hooks = .empty,
             .logger = logger,
         };
     }
@@ -69,9 +75,18 @@ pub const Router = struct {
         self.head_routes.deinit(self.allocator);
         self.options_routes.deinit(self.allocator);
         self.all_routes.deinit(self.allocator);
+        self.static_get.deinit();
+        self.static_post.deinit();
+        self.static_put.deinit();
+        self.static_delete.deinit();
+        self.static_patch.deinit();
+        self.static_head.deinit();
+        self.static_options.deinit();
+        self.static_all.deinit();
         self.mw.deinit();
         self.global_interceptors.deinit(self.allocator);
-        if (opts.with_static) self.static_configs.deinit(self.allocator);
+        for (self.hooks.items) |h| h.deinit(h.ptr, self.allocator);
+        self.hooks.deinit(self.allocator);
         self.logger.deinit();
     }
 
@@ -80,6 +95,21 @@ pub const Router = struct {
             .pattern = pattern,
             .handler = handler,
         };
+
+        if (isStaticRoute(pattern)) {
+            const static_map = switch (method) {
+                .GET => &self.static_get,
+                .POST => &self.static_post,
+                .PUT => &self.static_put,
+                .DELETE => &self.static_delete,
+                .PATCH => &self.static_patch,
+                .HEAD => &self.static_head,
+                .OPTIONS => &self.static_options,
+                .ALL => &self.static_all,
+            };
+            static_map.put(pattern, route) catch {};
+        }
+
         const list = switch (method) {
             .GET => &self.get_routes,
             .POST => &self.post_routes,
@@ -148,46 +178,32 @@ pub const Router = struct {
         self.error_handler = handler;
     }
 
-    pub fn useCors(self: *Router, config: CorsMod.CorsConfig) void {
-        if (comptime !opts.with_cors) @compileError("CORS requires -Dwith_cors=true");
-        self.cors_config = config;
+    pub fn useCors(self: *Router, config: @import("../cors/mod.zig").CorsConfig) void {
+        const h = @import("../cors/mod.zig").asHook(self.allocator, config);
+        self.hooks.append(self.allocator, h) catch @panic("ziez: OOM adding CORS hook");
     }
 
-    pub fn useSecurity(self: *Router, config: SecurityMod.SecurityConfig) void {
-        if (comptime !opts.with_security) @compileError("Security requires -Dwith_security=true");
-        self.security_config = config;
+    pub fn useSecurity(self: *Router, config: @import("../security/mod.zig").SecurityConfig) void {
+        const h = @import("../security/mod.zig").asHook(self.allocator, config);
+        self.hooks.append(self.allocator, h) catch @panic("ziez: OOM adding security hook");
     }
 
-    pub fn useStatic(self: *Router, config: StaticMod.StaticConfig) void {
-        if (comptime !opts.with_static) @compileError("Static file serving requires -Dwith_static=true");
-        self.static_configs.append(self.allocator, config) catch |e| {
-            std.debug.print("ziez: failed to add static config: {}\n", .{e});
-        };
+    pub fn useStatic(self: *Router, config: @import("../static/mod.zig").StaticConfig) void {
+        const h = @import("../static/mod.zig").asHook(self.allocator, config);
+        self.hooks.append(self.allocator, h) catch @panic("ziez: OOM adding static hook");
     }
 
-    pub fn setTemplateEngine(self: *Router, engine: *TemplateMod.TemplateEngine) void {
-        if (comptime !opts.with_template) @compileError("Template engine requires -Dwith_template=true");
-        self.template_engine = engine;
+    pub fn setTemplateEngine(self: *Router, engine: *@import("../template/mod.zig").TemplateEngine) void {
+        const h = @import("../template/mod.zig").asHook(engine);
+        self.hooks.append(self.allocator, h) catch @panic("ziez: OOM adding template hook");
     }
 
     pub fn handle(self: *Router, req: *Request, res: *Response) void {
-        if (opts.with_template) res.template_engine = self.template_engine;
         res.logger = self.logger;
         res.request_id = req.request_id;
-        if (opts.with_security) SecurityMod.apply(req, res, self.security_config);
 
-        if (opts.with_cors) {
-            if (self.cors_config) |config| {
-                if (!CorsMod.handle(req, res, config)) return;
-            }
-        }
-
-        if (opts.with_static) {
-            for (self.static_configs.items) |config| {
-                if (StaticMod.handle(req, res, config) catch false) {
-                    if (res.sent) return;
-                }
-            }
+        for (self.hooks.items) |h| {
+            if (!h.run(h.ptr, req, res)) return;
         }
 
         if (!self.mw.executeWithTrace(req, res, .{
@@ -208,12 +224,40 @@ pub const Router = struct {
             .ALL => self.all_routes.items,
         };
 
-        // Try exact-method routes first (static then parameterized)
-        if (dispatchRoute(self, method_routes, req, res, @tagName(req.method))) return;
+        // Try exact-method routes first (hash map for static, then parameterized)
+        const static_map = switch (req.method) {
+            .GET => &self.static_get,
+            .POST => &self.static_post,
+            .PUT => &self.static_put,
+            .DELETE => &self.static_delete,
+            .PATCH => &self.static_patch,
+            .HEAD => &self.static_head,
+            .OPTIONS => &self.static_options,
+            .ALL => &self.static_all,
+        };
+        if (static_map.get(req.path)) |route| {
+            req.params = .{};
+            self.trace(req, .{
+                .event = "route_matched",
+                .route_method = @tagName(req.method),
+                .route_pattern = route.pattern,
+            }, "route matched");
+            self.executeHandler(req, res, route, @tagName(req.method));
+            return;
+        }
+
+        // Try parameterized routes for exact method
+        if (dispatchParameterized(self, method_routes, req, res, @tagName(req.method))) return;
 
         // Try ALL-method routes as fallback
+        if (self.static_all.get(req.path)) |route| {
+            req.params = .{};
+            self.trace(req, .{ .event = "route_matched", .route_method = "ALL", .route_pattern = route.pattern }, "route matched");
+            self.executeHandler(req, res, route, "ALL");
+            return;
+        }
         if (self.all_routes.items.len > 0) {
-            if (dispatchRoute(self, self.all_routes.items, req, res, "ALL")) return;
+            if (dispatchParameterized(self, self.all_routes.items, req, res, "ALL")) return;
         }
 
         // 404 - no route matched
@@ -221,25 +265,8 @@ pub const Router = struct {
         res.status(404).json(.{ .@"error" = "Not Found", .statusCode = 404 });
     }
 
-    /// Dispatch against a slice of routes using static-first matching.
-    /// Returns true if a route was matched and handled.
-    fn dispatchRoute(self: *Router, routes: []const Route, req: *Request, res: *Response, method_tag: []const u8) bool {
-        // Phase 1: Try static routes (fast path - single string comparison)
-        for (routes) |route| {
-            if (!isStaticRoute(route.pattern)) continue;
-            if (std.mem.eql(u8, route.pattern, req.path)) {
-                req.params = .{};
-                self.trace(req, .{
-                    .event = "route_matched",
-                    .route_method = method_tag,
-                    .route_pattern = route.pattern,
-                }, "route matched");
-                self.executeHandler(req, res, route, method_tag);
-                return true;
-            }
-        }
-
-        // Phase 2: Try parameterized routes (segment-by-segment matching)
+    /// Dispatch against parameterized routes only.
+    fn dispatchParameterized(self: *Router, routes: []const Route, req: *Request, res: *Response, method_tag: []const u8) bool {
         for (routes) |route| {
             if (isStaticRoute(route.pattern)) continue;
             const result = util.matchRoute(route.pattern, req.path) orelse continue;

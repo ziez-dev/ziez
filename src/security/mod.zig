@@ -422,3 +422,21 @@ fn findIgnoreCaseFrom(haystack: []const u8, needle: []const u8, start: usize) ?u
     }
     return null;
 }
+
+// ── Hook integration ──────────────────────────────────────────────────────────
+
+fn hookRun(ptr: *anyopaque, req: *Request, res: *Response) bool {
+    const config: *SecurityConfig = @ptrCast(@alignCast(ptr));
+    apply(req, res, config.*);
+    return true;
+}
+
+fn hookDeinit(ptr: *anyopaque, allocator: std.mem.Allocator) void {
+    allocator.destroy(@as(*SecurityConfig, @ptrCast(@alignCast(ptr))));
+}
+
+pub fn asHook(allocator: std.mem.Allocator, config: SecurityConfig) @import("../core/hook.zig").RequestHook {
+    const cfg = allocator.create(SecurityConfig) catch @panic("ziez: OOM creating security hook");
+    cfg.* = config;
+    return .{ .ptr = cfg, .run = hookRun, .deinit = hookDeinit };
+}

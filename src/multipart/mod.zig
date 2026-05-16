@@ -401,7 +401,6 @@ fn openCurrentFile(
         ctx.file_index,
         extension,
     });
-    errdefer ctx.allocator.free(final_name);
     defer ctx.allocator.free(final_name);
     ctx.file_index += 1;
 
@@ -443,7 +442,7 @@ fn cleanupCurrentFile(ctx: *SaveContext, file: *CurrentFile) void {
 fn writeAll(file: std.Io.File, content: []const u8) !void {
     var io_impl = std.Io.Threaded.init_single_threaded;
     const io = io_impl.io();
-    try file.writePositionalAll(io, content, 0);
+    try file.writeStreamingAll(io, content);
 }
 
 fn buildTargetDir(allocator: std.mem.Allocator, config: UploadConfig) ![]u8 {
@@ -461,13 +460,6 @@ fn ensureDirRecursive(_: std.mem.Allocator, dir_path: []const u8) !void {
     var io_impl = std.Io.Threaded.init_single_threaded;
     const io = io_impl.io();
     std.Io.Dir.cwd().createDirPath(io, dir_path) catch {};
-}
-
-fn mkdirIfMissing(allocator: std.mem.Allocator, path: []const u8) !void {
-    _ = allocator;
-    var io_impl = std.Io.Threaded.init_single_threaded;
-    const io = io_impl.io();
-    std.Io.Dir.cwd().createDirPath(io, path) catch {};
 }
 
 fn trimTrailingSlashes(input: []const u8) []const u8 {

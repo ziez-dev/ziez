@@ -2,13 +2,10 @@ const std = @import("std");
 const ziez = @import("ziez");
 
 fn monotonicNs() i128 {
-    var ts: std.c.timespec = undefined;
-    if (std.c.clock_gettime(std.c.CLOCK.MONOTONIC, &ts) != 0) return 0;
-    return @as(i128, @intCast(ts.sec)) * 1_000_000_000 + @as(i128, @intCast(ts.nsec));
+    var io_impl = std.Io.Threaded.init_single_threaded;
+    const io = io_impl.io();
+    return @as(i128, @intCast(std.Io.Clock.awake.now(io).nanoseconds));
 }
-
-// Build with: zig build -Dwith_tracker=true
-// Run with:   zig build run-tracker -Dwith_tracker=true
 
 pub fn main() !void {
     const allocator = std.heap.smp_allocator;

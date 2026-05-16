@@ -1,5 +1,4 @@
 const std = @import("std");
-const opts = @import("ziez_options");
 const http = std.http;
 const net = std.Io.net;
 const logging = @import("logging.zig");
@@ -7,8 +6,43 @@ const platform = @import("platform.zig");
 const Router = @import("router.zig").Router;
 const Request = @import("request.zig").Request;
 const Response = @import("response.zig").Response;
-const CompressionMod = if (opts.with_compression) @import("../compression/mod.zig") else struct {};
-const TlsMod = if (opts.with_tls) @import("../tls/mod.zig") else struct {};
+
+/// Function pointer type for per-request logging. No feature module references.
+/// Args: logger, request_id, method, path, status, elapsed_ms, user_agent, content_length.
+pub const LogRequestFn = *const fn (logging.Logger, []const u8, []const u8, []const u8, u16, f64, ?[]const u8, ?u64) void;
+
+/// Type-erased per-connection configuration. No feature module references.
+pub const ConnConfig = struct {
+    compression_config: ?*anyopaque = null,
+    compress_fn: ?*const fn (*anyopaque, []const u8, *Response) bool = null,
+    log_request_fn: ?LogRequestFn = null,
+};
+
+/// Default built-in request logger — no tracker import, always safe to set as default.
+pub fn defaultLogRequestFn(
+    logger: logging.Logger,
+    _: []const u8,
+    method: []const u8,
+    path: []const u8,
+    status: u16,
+    elapsed_ms: f64,
+    _: ?[]const u8,
+    _: ?u64,
+) void {
+    logger.infoFields(.{
+        .event = "request_completed",
+        .method = method,
+        .path = path,
+        .status = status,
+        .elapsed_ms = elapsed_ms,
+    }, "request completed");
+}
+
+/// Function pointer type for TLS connection handling (set from app.tls() lazily).
+pub const TlsHandleFn = *const fn (std.mem.Allocator, net.Stream, *Router, ConnConfig, logging.Logger, *anyopaque) void;
+
+/// Function pointer type for HTTP→HTTPS redirect listener (set from app.redirectHttp() lazily).
+pub const RedirectRunFn = *const fn (std.mem.Allocator, []const u8, u16, *Router, ConnConfig, logging.Logger, *anyopaque) void;
 
 var next_request_id: std.atomic.Value(u64) = .init(1);
 
@@ -100,13 +134,14 @@ fn defaultWorkerCount() usize {
 const WorkerContext = struct {
     channel: *ConnectionChannel,
     router: *Router,
-    compression_config: if (opts.with_compression) ?CompressionMod.CompressionConfig else void,
+    conn_config: ConnConfig,
     logger: logging.Logger,
-    tls_runtime: if (opts.with_tls) ?*TlsMod.TlsRuntime else void,
+    tls_runtime: ?*anyopaque,
+    handle_tls_conn: ?TlsHandleFn,
 };
 
 // ---------------------------------------------------------------------------
-// Public entry point (unchanged signature)
+// Public entry point
 // ---------------------------------------------------------------------------
 
 pub fn listenAndServe(
@@ -114,27 +149,28 @@ pub fn listenAndServe(
     io: std.Io,
     address: []const u8,
     router: *Router,
-    compression_config: if (opts.with_compression) ?CompressionMod.CompressionConfig else void,
+    conn_config: ConnConfig,
     logger: logging.Logger,
-    tls_runtime: if (opts.with_tls) ?*TlsMod.TlsRuntime else void,
-    redirect_http: if (opts.with_tls) ?TlsMod.RedirectHttpConfig else void,
+    tls_runtime: ?*anyopaque,
+    handle_tls_conn: ?TlsHandleFn,
+    redirect_config: ?*anyopaque,
+    run_redirect: ?RedirectRunFn,
 ) !void {
     const ip_addr = try net.IpAddress.parseLiteral(address);
     var server = try ip_addr.listen(io, .{});
     defer server.deinit(io);
 
-    if (opts.with_tls) {
-        if (tls_runtime != null and redirect_http != null) {
-            try spawnRedirectListener(
-                allocator,
-                address,
-                ip_addr.getPort(),
-                router,
-                compression_config,
-                logger,
-                redirect_http.?,
-            );
-        }
+    if (tls_runtime != null and redirect_config != null) {
+        try spawnRedirectListener(
+            allocator,
+            address,
+            ip_addr.getPort(),
+            router,
+            conn_config,
+            logger,
+            redirect_config.?,
+            run_redirect.?,
+        );
     }
 
     // --- Thread pool setup ---
@@ -150,9 +186,9 @@ pub fn listenAndServe(
         .route_count = router.routeCount(),
         .middleware_count = router.mw.items.items.len,
         .interceptor_count = router.global_interceptors.items.len,
-        .compression_enabled = opts.with_compression and compression_config != null,
-        .tls_enabled = opts.with_tls and tls_runtime != null,
-        .redirect_http_enabled = opts.with_tls and redirect_http != null,
+        .compression_enabled = conn_config.compression_config != null,
+        .tls_enabled = tls_runtime != null,
+        .redirect_http_enabled = redirect_config != null,
         .worker_count = worker_count,
         .channel_capacity = channel_capacity,
     }, "server listening");
@@ -164,9 +200,10 @@ pub fn listenAndServe(
     var ctx = WorkerContext{
         .channel = channel,
         .router = router,
-        .compression_config = compression_config,
+        .conn_config = conn_config,
         .logger = logger,
         .tls_runtime = tls_runtime,
+        .handle_tls_conn = handle_tls_conn,
     };
 
     var spawned_count: usize = 0;
@@ -214,13 +251,13 @@ fn workerLoop(ctx: *WorkerContext) void {
     while (true) {
         const stream = ctx.channel.pop(io) orelse return;
 
-        if (opts.with_tls) {
-            if (ctx.tls_runtime) |runtime| {
-                handleTlsConnection(allocator, stream, ctx.router, ctx.compression_config, ctx.logger, runtime);
-                continue;
+        if (ctx.tls_runtime) |runtime| {
+            if (ctx.handle_tls_conn) |handle_fn| {
+                handle_fn(allocator, stream, ctx.router, ctx.conn_config, ctx.logger, runtime);
             }
+            continue;
         }
-        handleConnection(allocator, stream, ctx.router, ctx.compression_config, ctx.logger);
+        handlePlainConnection(allocator, stream, ctx.router, ctx.conn_config, ctx.logger);
     }
 }
 
@@ -228,27 +265,49 @@ fn workerLoop(ctx: *WorkerContext) void {
 // Redirect listener (unchanged — single dedicated thread)
 // ---------------------------------------------------------------------------
 
+const RedirectArgs = struct {
+    run_fn: RedirectRunFn,
+    allocator: std.mem.Allocator,
+    owned_address: []const u8,
+    https_port: u16,
+    router: *Router,
+    conn_config: ConnConfig,
+    logger: logging.Logger,
+    config_ptr: *anyopaque,
+};
+
+fn runRedirectThread(args_ptr: *RedirectArgs) void {
+    const args = args_ptr.*;
+    args.allocator.destroy(args_ptr);
+    args.run_fn(args.allocator, args.owned_address, args.https_port, args.router, args.conn_config, args.logger, args.config_ptr);
+}
+
 fn spawnRedirectListener(
     allocator: std.mem.Allocator,
     address: []const u8,
     https_port: u16,
     router: *Router,
-    compression_config: if (opts.with_compression) ?CompressionMod.CompressionConfig else void,
+    conn_config: ConnConfig,
     logger: logging.Logger,
-    redirect_http: TlsMod.RedirectHttpConfig,
+    redirect_config_ptr: *anyopaque,
+    run_fn: RedirectRunFn,
 ) !void {
     const owned_address = try allocator.dupe(u8, address);
     errdefer allocator.free(owned_address);
 
-    _ = try std.Thread.spawn(.{}, runRedirectListener, .{
-        allocator,
-        owned_address,
-        https_port,
-        router,
-        compression_config,
-        logger,
-        redirect_http,
-    });
+    const args = try allocator.create(RedirectArgs);
+    args.* = .{
+        .run_fn = run_fn,
+        .allocator = allocator,
+        .owned_address = owned_address,
+        .https_port = https_port,
+        .router = router,
+        .conn_config = conn_config,
+        .logger = logger,
+        .config_ptr = redirect_config_ptr,
+    };
+
+    _ = try std.Thread.spawn(.{}, runRedirectThread, .{args});
 }
 
 // ---------------------------------------------------------------------------
@@ -257,11 +316,11 @@ fn spawnRedirectListener(
 
 const MAX_BODY = 10 * 1024 * 1024; // 10MB
 
-fn handleConnection(
+fn handlePlainConnection(
     allocator: std.mem.Allocator,
     stream: net.Stream,
     router: *Router,
-    compression_config: if (opts.with_compression) ?CompressionMod.CompressionConfig else void,
+    conn_config: ConnConfig,
     logger: logging.Logger,
 ) void {
     var threaded = std.Io.Threaded.init(allocator, .{});
@@ -277,24 +336,28 @@ fn handleConnection(
 
     var http_server = http.Server.init(&net_reader.interface, &net_writer.interface);
 
-    processRequests(allocator, &http_server, router, compression_config, logger, false, null, if (opts.with_tls) null else {}, if (opts.with_tls) null else {});
+    processRequests(allocator, &http_server, router, conn_config, logger, false, null, null);
 }
 
-fn handleTlsConnection(
+/// Only analyzed when app.tls() is called — TlsMod only compiles when TLS is used.
+pub fn handleTlsConnection(
     allocator: std.mem.Allocator,
     stream: net.Stream,
     router: *Router,
-    compression_config: if (opts.with_compression) ?CompressionMod.CompressionConfig else void,
+    conn_config: ConnConfig,
     logger: logging.Logger,
-    tls_runtime: *TlsMod.TlsRuntime,
+    tls_runtime_ptr: *anyopaque,
 ) void {
+    const TlsMod = @import("../tls/mod.zig");
+    const tls_runtime: *TlsMod.TlsRuntime = @ptrCast(@alignCast(tls_runtime_ptr));
+
     var threaded = std.Io.Threaded.init(allocator, .{});
     defer stream.close(threaded.io());
 
     const io = threaded.io();
 
-    var read_buf: [tls_max_buffer_len]u8 = undefined;
-    var write_buf: [tls_max_buffer_len]u8 = undefined;
+    var read_buf: [std.crypto.tls.max_ciphertext_record_len]u8 = undefined;
+    var write_buf: [std.crypto.tls.max_ciphertext_record_len]u8 = undefined;
 
     var net_reader = stream.reader(io, &read_buf);
     var net_writer = stream.writer(io, &write_buf);
@@ -333,30 +396,32 @@ fn handleTlsConnection(
     };
     defer tls_server.end() catch {};
 
-    // After handshake, use the TLS server's decrypted reader/writer
-    // to feed into the HTTP server
     var tls_reader = tls_server.reader;
     var tls_writer = tls_server.writer;
 
     var http_server = http.Server.init(&tls_reader, &tls_writer);
 
     const sni_val = tls_server.sni_hostname orelse "unknown";
-    processRequests(allocator, &http_server, router, compression_config, logger, true, sni_val, tls_context, if (opts.with_tls) null else {});
+    processRequests(allocator, &http_server, router, conn_config, logger, true, sni_val, null);
 }
 
 // ---------------------------------------------------------------------------
 // Redirect listener (runs in its own thread)
 // ---------------------------------------------------------------------------
 
-fn runRedirectListener(
+/// Only analyzed when app.redirectHttp() is called — TlsMod only compiles when redirect+TLS is used.
+pub fn runRedirectListenerFn(
     allocator: std.mem.Allocator,
     owned_address: []const u8,
     https_port: u16,
     router: *Router,
-    compression_config: if (opts.with_compression) ?CompressionMod.CompressionConfig else void,
+    conn_config: ConnConfig,
     logger: logging.Logger,
-    redirect_http: TlsMod.RedirectHttpConfig,
+    redirect_config_ptr: *anyopaque,
 ) void {
+    const TlsMod = @import("../tls/mod.zig");
+    const redirect_http: *const TlsMod.RedirectHttpConfig = @ptrCast(@alignCast(redirect_config_ptr));
+
     defer allocator.free(owned_address);
 
     var threaded = std.Io.Threaded.init(allocator, .{});
@@ -393,6 +458,13 @@ fn runRedirectListener(
         .https_port = redirect_http.to orelse https_port,
     }, "redirect listener listening");
 
+    const shouldRedirectFn = struct {
+        fn f(ptr: *anyopaque, path: []const u8) bool {
+            const TM = @import("../tls/mod.zig");
+            return (@as(*const TM.RedirectHttpConfig, @ptrCast(@alignCast(ptr)))).shouldRedirect(path);
+        }
+    }.f;
+
     while (true) {
         const stream = server.accept(io) catch |e| {
             logger.errorFields(.{
@@ -407,10 +479,11 @@ fn runRedirectListener(
             allocator,
             stream,
             router,
-            compression_config,
+            conn_config,
             logger,
             RedirectPlan{
-                .config = redirect_http,
+                .should_redirect_fn = shouldRedirectFn,
+                .config_ptr = redirect_config_ptr,
                 .https_port = redirect_http.to orelse https_port,
                 .fallback_host = owned_address,
             },
@@ -425,10 +498,9 @@ fn runRedirectListener(
     }
 }
 
-const tls_max_buffer_len = std.crypto.tls.max_ciphertext_record_len;
-
 const RedirectPlan = struct {
-    config: TlsMod.RedirectHttpConfig,
+    should_redirect_fn: *const fn (*anyopaque, []const u8) bool,
+    config_ptr: *anyopaque,
     https_port: u16,
     fallback_host: []const u8,
 };
@@ -437,7 +509,7 @@ fn handleRedirectConnection(
     allocator: std.mem.Allocator,
     stream: net.Stream,
     router: *Router,
-    compression_config: if (opts.with_compression) ?CompressionMod.CompressionConfig else void,
+    conn_config: ConnConfig,
     logger: logging.Logger,
     redirect_plan: RedirectPlan,
 ) void {
@@ -453,7 +525,7 @@ fn handleRedirectConnection(
     var net_writer = stream.writer(io, &write_buf);
 
     var http_server = http.Server.init(&net_reader.interface, &net_writer.interface);
-    processRequests(allocator, &http_server, router, compression_config, logger, false, null, if (opts.with_tls) null else {}, redirect_plan);
+    processRequests(allocator, &http_server, router, conn_config, logger, false, null, redirect_plan);
 }
 
 // ---------------------------------------------------------------------------
@@ -464,14 +536,21 @@ fn processRequests(
     allocator: std.mem.Allocator,
     http_server: *http.Server,
     router: *Router,
-    compression_config: if (opts.with_compression) ?CompressionMod.CompressionConfig else void,
+    conn_config: ConnConfig,
     logger: logging.Logger,
     is_tls: bool,
     sni: ?[]const u8,
-    tls_context: if (opts.with_tls) ?*const TlsMod.TlsContext else void,
-    redirect_plan: if (opts.with_tls) ?RedirectPlan else void,
+    redirect_plan: ?RedirectPlan,
 ) void {
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
     while (true) {
+        if (!arena.reset(.retain_capacity)) {
+            arena = std.heap.ArenaAllocator.init(allocator);
+        }
+        const arena_alloc = arena.allocator();
+
         var http_req = http_server.receiveHead() catch |e| {
             if (e != error.EndOfStream and e != error.HttpConnectionClosing) {
                 logger.errorFields(.{
@@ -486,7 +565,7 @@ fn processRequests(
         const keep_alive = http_req.head.keep_alive;
 
         // Parse request metadata from head
-        var req = Request.initFromHead(allocator, http_req.head_buffer) catch |e| {
+        var req = Request.initFromHead(arena_alloc, http_req.head_buffer) catch |e| {
             logger.errorFields(.{
                 .component = "listener",
                 .event = "request_parse_failed",
@@ -497,9 +576,8 @@ fn processRequests(
         req.assignRequestId(next_request_id.fetchAdd(1, .monotonic));
         req.tls = is_tls;
         req.server_request = &http_req;
-        if (opts.with_tls and is_tls and sni != null) {
+        if (is_tls and sni != null) {
             req.tls_version = "TLSv1.3";
-            req.client_cert_subject = if (tls_context != null and tls_context.?.client_auth != .none) null else null;
         }
         const started_ns = monotonicTimeNs();
 
@@ -513,51 +591,46 @@ fn processRequests(
             }, "request started");
         }
 
-        if (opts.with_tls) {
-            if (redirect_plan) |plan| {
-                if (plan.config.shouldRedirect(req.path)) {
-                    const location = buildRedirectLocation(
-                        allocator,
-                        req.header("host"),
-                        plan.fallback_host,
-                        plan.https_port,
-                        http_req.head.target,
-                    ) catch null;
-                    defer if (location) |owned| allocator.free(owned);
+        if (redirect_plan) |plan| {
+            if (plan.should_redirect_fn(plan.config_ptr, req.path)) {
+                const location = buildRedirectLocation(
+                    arena_alloc,
+                    req.header("host"),
+                    plan.fallback_host,
+                    plan.https_port,
+                    http_req.head.target,
+                ) catch null;
+                defer if (location) |owned| arena_alloc.free(owned);
 
-                    var res = Response.init(allocator);
-                    res.server_request = &http_req;
-                    res.logger = logger;
-                    res.request_id = req.request_id;
-                    _ = res.status(308);
-                    if (location) |loc| _ = res.set("location", loc);
-                    res.sendBody("");
+                var res = Response.init(arena_alloc);
+                res.server_request = &http_req;
+                res.logger = logger;
+                res.request_id = req.request_id;
+                _ = res.status(308);
+                if (location) |loc| _ = res.set("location", loc);
+                res.sendBody("");
 
-                    if (opts.with_tracker) {
-                        const tracker_mod = @import("../tracker/mod.zig");
-                        const elapsed_ns = monotonicTimeNs() - started_ns;
-                        const summary = tracker_mod.buildSummary(
-                            req.request_id,
-                            @tagName(req.method),
-                            req.path,
-                            res.status_code,
-                            @as(f64, @floatFromInt(elapsed_ns)) / 1_000_000.0,
-                            req.header("user-agent"),
-                            null,
-                            .{},
-                        );
-                        tracker_mod.logRequestSummary(logger, summary);
-                    }
-
-                    req.deinit();
-                    if (!keep_alive) return;
-                    continue;
+                const elapsed_ns = monotonicTimeNs() - started_ns;
+                if (conn_config.log_request_fn) |log_fn| {
+                    log_fn(
+                        logger,
+                        req.request_id,
+                        @tagName(req.method),
+                        req.path,
+                        res.status_code,
+                        @as(f64, @floatFromInt(elapsed_ns)) / 1_000_000.0,
+                        req.header("user-agent"),
+                        null,
+                    );
                 }
+
+                if (!keep_alive) return;
+                continue;
             }
         }
 
         if (!isMultipartRequest(&req)) {
-            readBody(allocator, &http_req, &req) catch |e| {
+            readBody(arena_alloc, &http_req, &req) catch |e| {
                 logger.errorFields(.{
                     .component = "listener",
                     .event = "body_read_failed",
@@ -568,9 +641,10 @@ fn processRequests(
             };
         }
 
-        var res = Response.init(allocator);
+        var res = Response.init(arena_alloc);
         res.server_request = &http_req;
-        if (opts.with_compression) res.compression_config = compression_config;
+        res.compression_config = conn_config.compression_config;
+        res.compress_fn = conn_config.compress_fn;
         res.logger = logger;
         res.request_id = req.request_id;
 
@@ -580,14 +654,14 @@ fn processRequests(
             res.status(500).json(.{ .@"error" = "internal server error" });
         }
 
-        if (opts.with_tracker) {
-            const tracker = @import("../tracker/mod.zig");
+        const elapsed_ns = monotonicTimeNs() - started_ns;
+        if (conn_config.log_request_fn) |log_fn| {
             var content_length: ?u64 = null;
             if (req.header("content-length")) |raw| {
                 content_length = std.fmt.parseInt(u64, raw, 10) catch null;
             }
-            const elapsed_ns = monotonicTimeNs() - started_ns;
-            const summary = tracker.buildSummary(
+            log_fn(
+                logger,
                 req.request_id,
                 @tagName(req.method),
                 req.path,
@@ -595,12 +669,8 @@ fn processRequests(
                 @as(f64, @floatFromInt(elapsed_ns)) / 1_000_000.0,
                 req.header("user-agent"),
                 content_length,
-                .{},
             );
-            tracker.logRequestSummary(logger, summary);
         }
-
-        req.deinit();
 
         // Break the loop if the client does not want keep-alive
         if (!keep_alive) return;

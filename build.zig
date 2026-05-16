@@ -7,33 +7,8 @@ pub fn build(b: *std.Build) void {
     });
     const optimize = b.standardOptimizeOption(.{});
 
-    // --- Feature flags ---
-    const with_compression = b.option(bool, "with_compression", "Enable response compression (gzip/deflate/brotli)") orelse false;
-    const with_tls = b.option(bool, "with_tls", "Enable TLS/HTTPS support") orelse false;
-    const with_template = b.option(bool, "with_template", "Enable server-side template engine") orelse false;
-    const with_static = b.option(bool, "with_static", "Enable static file serving") orelse false;
-    const with_multipart = b.option(bool, "with_multipart", "Enable multipart/form-data and file upload parsing") orelse false;
-    const with_cors = b.option(bool, "with_cors", "Enable CORS middleware") orelse true;
-    const with_security = b.option(bool, "with_security", "Enable security headers and XSS sanitization") orelse true;
-    const with_validator = b.option(bool, "with_validator", "Enable validation helpers and schema") orelse true;
-    const with_serializer = b.option(bool, "with_serializer", "Enable response serializer") orelse true;
-    const with_tracker = b.option(bool, "with_tracker", "Enable request tracker and UA parser") orelse false;
-
-    const options = b.addOptions();
-    options.addOption(bool, "with_compression", with_compression);
-    options.addOption(bool, "with_tls", with_tls);
-    options.addOption(bool, "with_template", with_template);
-    options.addOption(bool, "with_static", with_static);
-    options.addOption(bool, "with_multipart", with_multipart);
-    options.addOption(bool, "with_cors", with_cors);
-    options.addOption(bool, "with_security", with_security);
-    options.addOption(bool, "with_validator", with_validator);
-    options.addOption(bool, "with_serializer", with_serializer);
-    options.addOption(bool, "with_tracker", with_tracker);
-    const options_mod = options.createModule();
-
-    // --- Brotli C library (only when with_compression) ---
-    const brotli_lib = if (with_compression) blk: {
+    // --- Brotli C library ---
+    const brotli_lib = blk: {
         const upstream = b.dependency("brotli", .{});
 
         const brotli_root_module = b.createModule(.{
@@ -76,16 +51,16 @@ pub fn build(b: *std.Build) void {
 
         b.installArtifact(lib);
         break :blk lib;
-    } else null;
+    };
 
-    // --- PCRE2 C library (only when with_tracker) ---
+    // --- PCRE2 C library ---
     const pcre2_source_root = b.path("include/pcre2");
     const pcre2_generated_headers = b.addWriteFiles();
     const pcre2_include = pcre2_generated_headers.getDirectory();
     _ = pcre2_generated_headers.addCopyFile(pcre2_source_root.path(b, "pcre2.h.generic"), "pcre2.h");
     _ = pcre2_generated_headers.addCopyFile(pcre2_source_root.path(b, "config.h.generic"), "config.h");
     const pcre2_chartables = pcre2_generated_headers.addCopyFile(pcre2_source_root.path(b, "pcre2_chartables.c.dist"), "pcre2_chartables.c");
-    const pcre2_lib = if (with_tracker) blk: {
+    const pcre2_lib = blk: {
         const pcre2_root_module = b.createModule(.{
             .target = target,
             .optimize = optimize,
@@ -138,10 +113,10 @@ pub fn build(b: *std.Build) void {
         lib.root_module.addCSourceFile(.{ .file = pcre2_chartables });
         b.installArtifact(lib);
         break :blk lib;
-    } else null;
+    };
 
-    // --- Brotli C module (only when with_compression) ---
-    const brotli_c_mod = if (with_compression) blk: {
+    // --- Brotli C module ---
+    const brotli_c_mod = blk: {
         const upstream = b.dependency("brotli", .{});
         const brotli_translate = b.addTranslateC(.{
             .root_source_file = b.path("include/brotli_c.h"),
@@ -152,7 +127,7 @@ pub fn build(b: *std.Build) void {
         break :blk b.addModule("brotli_c", .{
             .root_source_file = brotli_translate.getOutput(),
         });
-    } else null;
+    };
 
     // --- ziez module ---
     const ziez_mod = b.addModule("ziez", .{
@@ -160,15 +135,12 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .link_libc = true,
-        .imports = &.{.{ .name = "ziez_options", .module = options_mod }},
     });
-    if (brotli_c_mod) |mod| ziez_mod.addImport("brotli_c", mod);
-    if (pcre2_lib) |pcre2| {
-        ziez_mod.addIncludePath(pcre2_include);
-        ziez_mod.addIncludePath(pcre2_source_root);
-        ziez_mod.linkLibrary(pcre2);
-    }
-    if (brotli_lib) |brotli| ziez_mod.linkLibrary(brotli);
+    ziez_mod.addImport("brotli_c", brotli_c_mod);
+    ziez_mod.addIncludePath(pcre2_include);
+    ziez_mod.addIncludePath(pcre2_source_root);
+    ziez_mod.linkLibrary(pcre2_lib);
+    ziez_mod.linkLibrary(brotli_lib);
 
     const lib_mod = b.createModule(.{
         .root_source_file = b.path("src/root.zig"),
@@ -180,16 +152,16 @@ pub fn build(b: *std.Build) void {
         .name = "ziez",
         .root_module = lib_mod,
     });
-    lib.root_module.addImport("ziez_options", options_mod);
-    if (brotli_c_mod) |mod| lib.root_module.addImport("brotli_c", mod);
-    if (pcre2_lib) |pcre2| {
-        lib.root_module.addIncludePath(pcre2_include);
-        lib.root_module.addIncludePath(pcre2_source_root);
-        lib.root_module.linkLibrary(pcre2);
-    }
-    if (brotli_lib) |brotli| lib.root_module.linkLibrary(brotli);
+    lib.root_module.addImport("brotli_c", brotli_c_mod);
+    lib.root_module.addIncludePath(pcre2_include);
+    lib.root_module.addIncludePath(pcre2_source_root);
+    lib.root_module.linkLibrary(pcre2_lib);
+    lib.root_module.linkLibrary(brotli_lib);
     b.installArtifact(lib);
 
+    // --- Examples ---
+
+    // Basic example
     const exe_mod = b.createModule(.{
         .root_source_file = b.path("examples/basic.zig"),
         .target = target,
@@ -282,9 +254,8 @@ pub fn build(b: *std.Build) void {
     const stream_run_step = b.step("run-streaming", "Run the streaming example");
     stream_run_step.dependOn(&stream_run_cmd.step);
 
-    // ── Optional module examples (only built when the required flag is set) ────
-
-    if (with_tls) {
+    // TLS example
+    {
         const tls_exe_mod = b.createModule(.{
             .root_source_file = b.path("examples/tls.zig"),
             .target = target,
@@ -296,11 +267,12 @@ pub fn build(b: *std.Build) void {
         const tls_run_cmd = b.addRunArtifact(tls_example);
         tls_run_cmd.step.dependOn(b.getInstallStep());
         if (b.args) |args| tls_run_cmd.addArgs(args);
-        const tls_run_step = b.step("run-tls", "Run the TLS/HTTPS example (-Dwith_tls=true)");
+        const tls_run_step = b.step("run-tls", "Run the TLS/HTTPS example");
         tls_run_step.dependOn(&tls_run_cmd.step);
     }
 
-    if (with_compression) {
+    // Compression example
+    {
         const comp_exe_mod = b.createModule(.{
             .root_source_file = b.path("examples/compression.zig"),
             .target = target,
@@ -312,10 +284,11 @@ pub fn build(b: *std.Build) void {
         const comp_run_cmd = b.addRunArtifact(comp_example);
         comp_run_cmd.step.dependOn(b.getInstallStep());
         if (b.args) |args| comp_run_cmd.addArgs(args);
-        const comp_run_step = b.step("run-compression", "Run the compression example (-Dwith_compression=true)");
+        const comp_run_step = b.step("run-compression", "Run the compression example");
         comp_run_step.dependOn(&comp_run_cmd.step);
     }
 
+    // CORS + Security example
     {
         const cs_exe_mod = b.createModule(.{
             .root_source_file = b.path("examples/cors_security.zig"),
@@ -332,7 +305,8 @@ pub fn build(b: *std.Build) void {
         cs_run_step.dependOn(&cs_run_cmd.step);
     }
 
-    if (with_static and with_template) {
+    // Static + Template example
+    {
         const st_exe_mod = b.createModule(.{
             .root_source_file = b.path("examples/static_template.zig"),
             .target = target,
@@ -344,11 +318,12 @@ pub fn build(b: *std.Build) void {
         const st_run_cmd = b.addRunArtifact(st_example);
         st_run_cmd.step.dependOn(b.getInstallStep());
         if (b.args) |args| st_run_cmd.addArgs(args);
-        const st_run_step = b.step("run-static-template", "Run the static + template example (-Dwith_static=true -Dwith_template=true)");
+        const st_run_step = b.step("run-static-template", "Run the static + template example");
         st_run_step.dependOn(&st_run_cmd.step);
     }
 
-    if (with_multipart) {
+    // Multipart example
+    {
         const mp_exe_mod = b.createModule(.{
             .root_source_file = b.path("examples/multipart.zig"),
             .target = target,
@@ -360,11 +335,12 @@ pub fn build(b: *std.Build) void {
         const mp_run_cmd = b.addRunArtifact(mp_example);
         mp_run_cmd.step.dependOn(b.getInstallStep());
         if (b.args) |args| mp_run_cmd.addArgs(args);
-        const mp_run_step = b.step("run-multipart", "Run the multipart upload example (-Dwith_multipart=true)");
+        const mp_run_step = b.step("run-multipart", "Run the multipart upload example");
         mp_run_step.dependOn(&mp_run_cmd.step);
     }
 
-    if (with_tracker) {
+    // Tracker example
+    {
         const tr_exe_mod = b.createModule(.{
             .root_source_file = b.path("examples/tracker.zig"),
             .target = target,
@@ -376,7 +352,7 @@ pub fn build(b: *std.Build) void {
         const tr_run_cmd = b.addRunArtifact(tr_example);
         tr_run_cmd.step.dependOn(b.getInstallStep());
         if (b.args) |args| tr_run_cmd.addArgs(args);
-        const tr_run_step = b.step("run-tracker", "Run the request tracker + UA parser example (-Dwith_tracker=true)");
+        const tr_run_step = b.step("run-tracker", "Run the request tracker + UA parser example");
         tr_run_step.dependOn(&tr_run_cmd.step);
     }
 
@@ -394,7 +370,6 @@ pub fn build(b: *std.Build) void {
     while (walker.next(io) catch null) |entry| {
         if (entry.kind != .file) continue;
         if (!std.mem.endsWith(u8, entry.basename, ".test.zig")) continue;
-        if (std.mem.eql(u8, entry.path, "tracker.test.zig") and !with_tracker) continue;
 
         const test_path = std.fmt.allocPrint(b.allocator, "tests/{s}", .{entry.path}) catch continue;
 
@@ -404,7 +379,6 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "ziez", .module = ziez_mod },
-                .{ .name = "ziez_options", .module = options_mod },
             },
         });
 
@@ -427,7 +401,6 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .imports = &.{
             .{ .name = "ziez", .module = ziez_mod },
-            .{ .name = "ziez_options", .module = options_mod },
         },
     });
 

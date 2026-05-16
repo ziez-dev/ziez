@@ -1,14 +1,7 @@
 const std = @import("std");
-const opts = @import("ziez_options");
 const middleware = @import("middleware.zig");
 const interceptor = @import("interceptor.zig");
-const CompressionMod = if (opts.with_compression) @import("../compression/mod.zig") else struct {};
-const CorsMod = if (opts.with_cors) @import("../cors/mod.zig") else struct {};
 const log_mod = @import("logging.zig");
-const SecurityMod = if (opts.with_security) @import("../security/mod.zig") else struct {};
-const TlsMod = if (opts.with_tls) @import("../tls/mod.zig") else struct {};
-const StaticMod = if (opts.with_static) @import("../static/mod.zig") else struct {};
-const TemplateMod = if (opts.with_template) @import("../template/mod.zig") else struct {};
 const Router = @import("router.zig").Router;
 const listener = @import("listener.zig");
 
@@ -16,10 +9,20 @@ pub const App = struct {
     router: Router,
     logger: log_mod.Logger,
     allocator: std.mem.Allocator,
-    compression_config: if (opts.with_compression) ?CompressionMod.CompressionConfig else void,
-    tls_config: if (opts.with_tls) ?TlsMod.TlsConfig else void,
-    tls_runtime: if (opts.with_tls) ?*TlsMod.TlsRuntime else void,
-    redirect_http_config: if (opts.with_tls) ?TlsMod.RedirectHttpConfig else void,
+    // Type-erased compression — only set when user calls app.compress()
+    conn_config: listener.ConnConfig,
+    compress_free_fn: ?*const fn (*anyopaque, std.mem.Allocator) void,
+    // Type-erased TLS — only set when user calls app.tls()
+    tls_runtime: ?*anyopaque,
+    tls_config_ptr: ?*anyopaque,
+    tls_create_fn: ?*const fn (*anyopaque, std.mem.Allocator) anyerror!*anyopaque,
+    tls_destroy_fn: ?*const fn (*anyopaque) void,
+    tls_config_free_fn: ?*const fn (*anyopaque, std.mem.Allocator) void,
+    handle_tls_fn: ?listener.TlsHandleFn,
+    // Type-erased redirect — only set when user calls app.redirectHttp()
+    redirect_config_ptr: ?*anyopaque,
+    redirect_config_free_fn: ?*const fn (*anyopaque, std.mem.Allocator) void,
+    run_redirect_fn: ?listener.RedirectRunFn,
 
     pub fn init(allocator: std.mem.Allocator) App {
         const router = Router.init(allocator);
@@ -27,52 +30,62 @@ pub const App = struct {
             .router = router,
             .logger = router.logger,
             .allocator = allocator,
-            .compression_config = if (opts.with_compression) null else {},
-            .tls_config = if (opts.with_tls) null else {},
-            .tls_runtime = if (opts.with_tls) null else {},
-            .redirect_http_config = if (opts.with_tls) null else {},
+            .conn_config = .{ .log_request_fn = listener.defaultLogRequestFn },
+            .compress_free_fn = null,
+            .tls_runtime = null,
+            .tls_config_ptr = null,
+            .tls_create_fn = null,
+            .tls_destroy_fn = null,
+            .tls_config_free_fn = null,
+            .handle_tls_fn = null,
+            .redirect_config_ptr = null,
+            .redirect_config_free_fn = null,
+            .run_redirect_fn = null,
         };
     }
 
     pub fn deinit(self: *App) void {
-        if (opts.with_tls) {
-            if (self.tls_runtime) |runtime| {
-                runtime.destroy();
-                self.tls_runtime = null;
-            }
+        if (self.tls_runtime) |ptr| {
+            if (self.tls_destroy_fn) |destroy| destroy(ptr);
+            self.tls_runtime = null;
+        }
+        if (self.tls_config_ptr) |ptr| {
+            if (self.tls_config_free_fn) |free_fn| free_fn(ptr, self.allocator);
+            self.tls_config_ptr = null;
+        }
+        if (self.redirect_config_ptr) |ptr| {
+            if (self.redirect_config_free_fn) |free_fn| free_fn(ptr, self.allocator);
+            self.redirect_config_ptr = null;
+        }
+        if (self.conn_config.compression_config) |ptr| {
+            if (self.compress_free_fn) |free_fn| free_fn(ptr, self.allocator);
+            self.conn_config.compression_config = null;
         }
         self.router.deinit();
     }
 
     pub fn listen(self: *App, io: std.Io, address: []const u8) !void {
-        if (opts.with_tls) {
-            if (self.tls_config) |config| {
-                if (self.tls_runtime == null) {
-                    self.tls_runtime = try TlsMod.TlsRuntime.create(self.allocator, config);
+        if (self.tls_config_ptr) |cfg_ptr| {
+            if (self.tls_runtime == null) {
+                if (self.tls_create_fn) |create_fn| {
+                    self.tls_runtime = try create_fn(cfg_ptr, self.allocator);
                 }
-                try listener.listenAndServe(
-                    self.allocator,
-                    io,
-                    address,
-                    &self.router,
-                    self.compression_config,
-                    self.logger,
-                    self.tls_runtime,
-                    self.redirect_http_config,
-                );
-                return;
             }
         }
-        if (opts.with_tls and self.redirect_http_config != null) return error.TlsRequiredForRedirect;
+        if (self.redirect_config_ptr != null and self.tls_runtime == null) {
+            return error.TlsRequiredForRedirect;
+        }
         try listener.listenAndServe(
             self.allocator,
             io,
             address,
             &self.router,
-            self.compression_config,
+            self.conn_config,
             self.logger,
-            if (opts.with_tls) null else {},
-            if (opts.with_tls) null else {},
+            self.tls_runtime,
+            self.handle_tls_fn,
+            self.redirect_config_ptr,
+            self.run_redirect_fn,
         );
     }
 
@@ -113,28 +126,67 @@ pub const App = struct {
         self.router.setErrorHandler(handler);
     }
 
-    /// Enable response compression with optional config.
-    pub fn compress(self: *App, config: CompressionMod.CompressionConfig) void {
-        if (opts.with_compression == false) @compileError("Compression requires -Dwith_compression=true");
-        self.compression_config = config;
+    /// Enable rich request/response logging via the tracker module.
+    /// Only compiles tracker module when called; otherwise the built-in basic logger is used.
+    pub fn useTracker(self: *App) void {
+        const TrackerMod = @import("../tracker/mod.zig");
+        self.conn_config.log_request_fn = TrackerMod.logRequestFn;
     }
 
-    /// Enable HTTPS/TLS with the given configuration.
-    pub fn tls(self: *App, config: TlsMod.TlsConfig) void {
-        if (opts.with_tls == false) @compileError("TLS requires -Dwith_tls=true");
-        self.tls_config = config;
+    /// Enable response compression. Only compiles compression module when called.
+    pub fn compress(self: *App, config: @import("../compression/mod.zig").CompressionConfig) void {
+        const CompressionMod = @import("../compression/mod.zig");
+        if (self.conn_config.compression_config) |ptr| {
+            if (self.compress_free_fn) |free_fn| free_fn(ptr, self.allocator);
+        }
+        const owned = self.allocator.create(CompressionMod.CompressionConfig) catch @panic("ziez: OOM configuring compression");
+        owned.* = config;
+        self.conn_config.compression_config = owned;
+        self.conn_config.compress_fn = CompressionMod.applyFn;
+        self.compress_free_fn = CompressionMod.freeConfigFn;
     }
 
-    pub fn redirectHttp(self: *App, config: TlsMod.RedirectHttpConfig) void {
-        if (opts.with_tls == false) @compileError("TLS redirect requires -Dwith_tls=true");
-        self.redirect_http_config = config;
+    /// Enable HTTPS/TLS. Only compiles TLS module when called.
+    pub fn tls(self: *App, config: @import("../tls/mod.zig").TlsConfig) void {
+        const TlsMod = @import("../tls/mod.zig");
+        if (self.tls_config_ptr) |ptr| {
+            if (self.tls_config_free_fn) |free_fn| free_fn(ptr, self.allocator);
+        }
+        const owned = self.allocator.create(TlsMod.TlsConfig) catch @panic("ziez: OOM configuring TLS");
+        owned.* = config;
+        self.tls_config_ptr = owned;
+        self.tls_config_free_fn = TlsMod.freeConfigFn;
+        self.tls_create_fn = TlsMod.createRuntimeFn;
+        self.tls_destroy_fn = TlsMod.destroyRuntimeFn;
+        self.handle_tls_fn = listener.handleTlsConnection;
     }
 
-    pub fn reloadTls(self: *App, config: TlsMod.TlsConfig) !void {
-        if (opts.with_tls == false) @compileError("TLS requires -Dwith_tls=true");
-        self.tls_config = config;
-        if (self.tls_runtime) |runtime| {
-            try runtime.reload(config);
+    /// Enable HTTP→HTTPS redirect. Only compiles TLS module when called.
+    pub fn redirectHttp(self: *App, config: @import("../tls/mod.zig").RedirectHttpConfig) void {
+        const TlsMod = @import("../tls/mod.zig");
+        if (self.redirect_config_ptr) |ptr| {
+            if (self.redirect_config_free_fn) |free_fn| free_fn(ptr, self.allocator);
+        }
+        const owned = self.allocator.create(TlsMod.RedirectHttpConfig) catch @panic("ziez: OOM configuring redirect");
+        owned.* = config;
+        self.redirect_config_ptr = owned;
+        self.redirect_config_free_fn = TlsMod.freeRedirectConfigFn;
+        self.run_redirect_fn = listener.runRedirectListenerFn;
+    }
+
+    pub fn reloadTls(self: *App, config: @import("../tls/mod.zig").TlsConfig) !void {
+        const TlsMod = @import("../tls/mod.zig");
+        if (self.tls_config_ptr) |ptr| {
+            const stored: *TlsMod.TlsConfig = @ptrCast(@alignCast(ptr));
+            stored.* = config;
+        } else {
+            const owned = try self.allocator.create(TlsMod.TlsConfig);
+            owned.* = config;
+            self.tls_config_ptr = owned;
+            self.tls_config_free_fn = TlsMod.freeConfigFn;
+        }
+        if (self.tls_runtime) |runtime_ptr| {
+            try TlsMod.reloadRuntimeFn(runtime_ptr, self.tls_config_ptr.?);
             self.logger.infoFields(.{
                 .component = "tls",
                 .event = "context_reloaded",
@@ -148,24 +200,22 @@ pub const App = struct {
     }
 
     /// Enable global CORS handling.
-    pub fn cors(self: *App, config: CorsMod.CorsConfig) void {
+    pub fn cors(self: *App, config: @import("../cors/mod.zig").CorsConfig) void {
         self.router.useCors(config);
     }
 
-    /// Configure default-on security headers and XSS sanitization.
-    pub fn security(self: *App, config: SecurityMod.SecurityConfig) void {
+    /// Configure security headers and XSS sanitization.
+    pub fn security(self: *App, config: @import("../security/mod.zig").SecurityConfig) void {
         self.router.useSecurity(config);
     }
 
     /// Serve static files from a directory.
-    pub fn serveStatic(self: *App, config: StaticMod.StaticConfig) void {
-        if (opts.with_static == false) @compileError("Static file serving requires -Dwith_static=true");
+    pub fn serveStatic(self: *App, config: @import("../static/mod.zig").StaticConfig) void {
         self.router.useStatic(config);
     }
 
     /// Register a template engine for server-side rendering.
-    pub fn setTemplateEngine(self: *App, engine: *TemplateMod.TemplateEngine) void {
-        if (opts.with_template == false) @compileError("Template engine requires -Dwith_template=true");
+    pub fn setTemplateEngine(self: *App, engine: *@import("../template/mod.zig").TemplateEngine) void {
         self.router.setTemplateEngine(engine);
     }
 };

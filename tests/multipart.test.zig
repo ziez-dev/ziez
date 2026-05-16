@@ -1,6 +1,5 @@
 const std = @import("std");
 const ziez = @import("ziez");
-const opts = @import("ziez_options");
 
 fn mkdirZ(path: [*:0]const u8) void {
     var io_impl = std.Io.Threaded.init_single_threaded;
@@ -51,23 +50,18 @@ fn makeMultipartRequest(body: []const u8, content_type: []const u8) ziez.Request
 }
 
 test "extractBoundary" {
-    if (comptime opts.with_multipart) {
         const b = ziez.Multipart.extractBoundary("multipart/form-data; boundary=----WebKitFormBoundaryABC123");
         try std.testing.expect(b != null);
         try std.testing.expectEqualStrings("----WebKitFormBoundaryABC123", b.?);
-    }
 }
 
 test "extractBoundary - quoted" {
-    if (comptime opts.with_multipart) {
         const b = ziez.Multipart.extractBoundary("multipart/form-data; boundary=\"myboundary\"");
         try std.testing.expect(b != null);
         try std.testing.expectEqualStrings("myboundary", b.?);
-    }
 }
 
 test "parse multipart" {
-    if (comptime opts.with_multipart) {
         const body =
             "--myboundary\r\n" ++
             "Content-Disposition: form-data; name=\"field1\"\r\n" ++
@@ -95,11 +89,9 @@ test "parse multipart" {
         try std.testing.expectEqualStrings("test.txt", file.filename.?);
         try std.testing.expectEqualStrings("text/plain", file.content_type.?);
         try std.testing.expectEqualStrings("file content here", file.data);
-    }
 }
 
 test "saveMultipart writes file to local storage and preserves fields" {
-    if (comptime opts.with_multipart) {
         mkdirZ(".zig-cache/test-upload");
         mkdirZ(".zig-cache/test-upload/uploads");
         defer {
@@ -153,11 +145,9 @@ test "saveMultipart writes file to local storage and preserves fields" {
         const saved = try readFileAlloc(std.testing.allocator, file.path);
         defer std.testing.allocator.free(saved);
         try std.testing.expectEqualStrings("hello upload", saved);
-    }
 }
 
 test "saveMultipart rejects unsupported mime type" {
-    if (comptime opts.with_multipart) {
         const body =
             "--mimebound\r\n" ++
             "Content-Disposition: form-data; name=\"avatar\"; filename=\"avatar.txt\"\r\n" ++
@@ -176,11 +166,9 @@ test "saveMultipart rejects unsupported mime type" {
             .allowed_types = &.{"image/*"},
             .file_fields = &.{"avatar"},
         }));
-    }
 }
 
 test "saveMultipart rejects oversized file" {
-    if (comptime opts.with_multipart) {
         mkdirZ(".zig-cache/test-upload-too-large");
         defer rmdirZ(".zig-cache/test-upload-too-large");
 
@@ -204,5 +192,4 @@ test "saveMultipart rejects oversized file" {
             .file_fields = &.{"avatar"},
             .chunk_size = 4,
         }));
-    }
 }

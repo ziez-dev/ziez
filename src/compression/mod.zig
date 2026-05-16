@@ -1,7 +1,6 @@
 const std = @import("std");
 const flate = std.compress.flate;
-const opts = @import("ziez_options");
-const brotli_c = if (opts.with_compression) @import("brotli_c") else struct {};
+const brotli_c = @import("brotli_c");
 
 pub const Algorithm = enum {
     gzip,
@@ -197,27 +196,69 @@ fn compressBrotli(
     body: []const u8,
     level: CompressionLevel,
 ) ![]const u8 {
-    if (!opts.with_compression) {
-        return error.CompressionDisabled;
-    }
-    const BrotliC = @import("brotli_c");
     const quality = level.toBrotliQuality();
-    const max_size = BrotliC.BrotliEncoderMaxCompressedSize(body.len);
+    const max_size = brotli_c.BrotliEncoderMaxCompressedSize(body.len);
     const output = try allocator.alloc(u8, max_size);
     errdefer allocator.free(output);
 
     var encoded_size: usize = output.len;
-    const result = BrotliC.BrotliEncoderCompress(
+    const result = brotli_c.BrotliEncoderCompress(
         quality,
-        BrotliC.BROTLI_DEFAULT_WINDOW,
-        BrotliC.BROTLI_MODE_GENERIC,
+        brotli_c.BROTLI_DEFAULT_WINDOW,
+        brotli_c.BROTLI_MODE_GENERIC,
         body.len,
         body.ptr,
         &encoded_size,
         output.ptr,
     );
 
-    if (result != BrotliC.BROTLI_TRUE) return error.BrotliEncodeFailed;
+    if (result != brotli_c.BROTLI_TRUE) return error.BrotliEncodeFailed;
 
     return allocator.realloc(output, encoded_size);
+}
+
+// ── Type-erased adapter for DCE integration ───────────────────────────────────
+
+/// Called via function pointer from Response.sendBody when compression is active.
+/// Accesses all needed data through public struct fields on Response.
+pub fn applyFn(config_ptr: *anyopaque, body: []const u8, res: *@import("../core/response.zig").Response) bool {
+    const config: *const CompressionConfig = @ptrCast(@alignCast(config_ptr));
+    const req = res.server_request orelse return false;
+
+    var content_type: ?[]const u8 = null;
+    var content_encoding: ?[]const u8 = null;
+    for (res.headers[0..res.headers_len]) |h| {
+        if (std.ascii.eqlIgnoreCase(h.name, "content-type")) content_type = h.value;
+        if (std.ascii.eqlIgnoreCase(h.name, "content-encoding")) content_encoding = h.value;
+    }
+
+    if (!shouldCompress(body, content_type, content_encoding, config.*)) return false;
+
+    var accept_encoding: []const u8 = "";
+    var it = std.http.HeaderIterator.init(req.head_buffer);
+    while (it.next()) |h| {
+        if (std.ascii.eqlIgnoreCase(h.name, "accept-encoding")) {
+            accept_encoding = h.value;
+            break;
+        }
+    }
+
+    const algo = selectAlgorithm(accept_encoding, config.*) orelse return false;
+    const compressed = compressBody(res.allocator, body, algo, config.level) catch return false;
+    defer res.allocator.free(compressed);
+
+    _ = res.set("content-encoding", algo.encodingName());
+
+    var extra_headers: [32]std.http.Header = undefined;
+    for (res.headers[0..res.headers_len], 0..) |h, i| extra_headers[i] = h;
+    req.respond(compressed, .{
+        .status = @enumFromInt(res.status_code),
+        .extra_headers = extra_headers[0..res.headers_len],
+        .keep_alive = true,
+    }) catch {};
+    return true;
+}
+
+pub fn freeConfigFn(ptr: *anyopaque, allocator: std.mem.Allocator) void {
+    allocator.destroy(@as(*CompressionConfig, @ptrCast(@alignCast(ptr))));
 }

@@ -150,19 +150,14 @@ fn bigCmpEq(a: []const u8, b: []const u8) i8 {
 }
 
 fn bigSubInPlace(a: []u8, b: []const u8) void {
-    var borrow: u8 = 0;
+    var borrow: u16 = 0;
     var i: usize = a.len;
     while (i > 0) : (i -= 1) {
         const ai: u16 = a[i - 1];
-        const bi: u16 = if (i - 1 < b.len) b[b.len - 1 - (i - 1)] else 0;
-        const diff: i16 = @as(i16, ai) - @as(i16, bi) - @as(i16, borrow);
-        if (diff < 0) {
-            a[i - 1] = @intCast(@as(i16, diff) + 256);
-            borrow = 1;
-        } else {
-            a[i - 1] = @intCast(diff);
-            borrow = 0;
-        }
+        const bi: u16 = if (i <= b.len) b[i - 1] else 0;
+        const sub = ai -| bi -| borrow;
+        a[i - 1] = @intCast(sub & 0xFF);
+        borrow = if (ai < bi + borrow) 1 else 0;
     }
 }
 

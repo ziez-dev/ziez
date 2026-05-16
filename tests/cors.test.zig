@@ -249,5 +249,5 @@ test "App.cors enables router CORS config" {
 
     app.cors(.{});
 
-    try std.testing.expect(app.router.cors_config != null);
+    try std.testing.expectEqual(@as(usize, 1), app.router.hooks.items.len);
 }

@@ -155,3 +155,20 @@ fn methodName(method: util.HttpMethod) []const u8 {
         .ALL => "*",
     };
 }
+
+// ── Hook integration ──────────────────────────────────────────────────────────
+
+fn hookRun(ptr: *anyopaque, req: *Request, res: *Response) bool {
+    const config: *CorsConfig = @ptrCast(@alignCast(ptr));
+    return handle(req, res, config.*);
+}
+
+fn hookDeinit(ptr: *anyopaque, allocator: std.mem.Allocator) void {
+    allocator.destroy(@as(*CorsConfig, @ptrCast(@alignCast(ptr))));
+}
+
+pub fn asHook(allocator: std.mem.Allocator, config: CorsConfig) @import("../core/hook.zig").RequestHook {
+    const cfg = allocator.create(CorsConfig) catch @panic("ziez: OOM creating CORS hook");
+    cfg.* = config;
+    return .{ .ptr = cfg, .run = hookRun, .deinit = hookDeinit };
+}

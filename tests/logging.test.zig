@@ -1,6 +1,5 @@
 const std = @import("std");
 const ziez = @import("ziez");
-const opts = @import("ziez_options");
 
 const Capture = struct {
     allocator: std.mem.Allocator,
@@ -127,7 +126,6 @@ test "App logging defaults: level is info" {
 }
 
 test "Logger request summary emits expected schema" {
-    if (comptime opts.with_tracker) {
         var capture = Capture.init(std.testing.allocator);
         defer capture.deinit();
         var logger = ziez.Logger.init(std.testing.allocator, .{ .level = .info, .sink = capture.sink() });
@@ -147,7 +145,6 @@ test "Logger request summary emits expected schema" {
         try std.testing.expect(contains(capture.buf.items, "\"path\":\"/users\""));
         try std.testing.expect(contains(capture.buf.items, "\"status\":200"));
         try std.testing.expect(contains(capture.buf.items, "\"response_time_ms\":12.5"));
-    }
 }
 
 test "Router lifecycle trace emits middleware, interceptor, and handler events" {

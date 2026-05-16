@@ -1,7 +1,6 @@
 const std = @import("std");
 const ziez = @import("ziez");
 const ua = ziez.ua_parser;
-const opts = @import("ziez_options");
 
 // ────────────────────────────────────────────────────────────────────────────
 // Browser detection tests
