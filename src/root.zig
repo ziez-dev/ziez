@@ -21,6 +21,10 @@ pub const LogRequestFn = @import("core/listener.zig").LogRequestFn;
 pub const CompressionFn = @import("core/listener.zig").CompressionFn;
 pub const TlsHandleFn = @import("core/listener.zig").TlsHandleFn;
 pub const RedirectRunFn = @import("core/listener.zig").RedirectRunFn;
+pub const ConnConfig = @import("core/listener.zig").ConnConfig;
+pub const RedirectPlan = @import("core/listener.zig").RedirectPlan;
+pub const processRequests = @import("core/listener.zig").processRequests;
+pub const handleRedirectConnection = @import("core/listener.zig").handleRedirectConnection;
 
 // ── Env ───────────────────────────────────────────────────────────────────────
 pub const Env = @import("core/env.zig").Env;

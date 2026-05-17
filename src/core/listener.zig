@@ -378,7 +378,7 @@ pub fn handleRedirectConnection(
 // Request processing loop (keep-alive aware)
 // ---------------------------------------------------------------------------
 
-fn processRequests(
+pub fn processRequests(
     allocator: std.mem.Allocator,
     http_server: *http.Server,
     router: *Router,
