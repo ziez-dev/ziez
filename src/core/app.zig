@@ -1,16 +1,13 @@
 const std = @import("std");
 const middleware = @import("middleware.zig");
-const interceptor = @import("interceptor.zig");
 const log_mod = @import("logging.zig");
 const Router = @import("router.zig").Router;
 const listener = @import("listener.zig");
-const plugin_mod = @import("plugin.zig");
 
 pub const App = struct {
     router: Router,
     logger: log_mod.Logger,
     allocator: std.mem.Allocator,
-    plugins: std.ArrayListUnmanaged(plugin_mod.Plugin),
     // Type-erased compression — only set when user calls app.compress()
     conn_config: listener.ConnConfig,
     compress_free_fn: ?*const fn (*anyopaque, std.mem.Allocator) void,
@@ -20,6 +17,7 @@ pub const App = struct {
     tls_create_fn: ?*const fn (*anyopaque, std.mem.Allocator) anyerror!*anyopaque,
     tls_destroy_fn: ?*const fn (*anyopaque) void,
     tls_config_free_fn: ?*const fn (*anyopaque, std.mem.Allocator) void,
+    tls_reload_fn: ?*const fn (*anyopaque, *anyopaque) anyerror!void,
     handle_tls_fn: ?listener.TlsHandleFn,
     // Type-erased redirect — only set when user calls app.redirectHttp()
     redirect_config_ptr: ?*anyopaque,
@@ -32,7 +30,6 @@ pub const App = struct {
             .router = router,
             .logger = router.logger,
             .allocator = allocator,
-            .plugins = .empty,
             .conn_config = .{ .log_request_fn = listener.defaultLogRequestFn },
             .compress_free_fn = null,
             .tls_runtime = null,
@@ -40,6 +37,7 @@ pub const App = struct {
             .tls_create_fn = null,
             .tls_destroy_fn = null,
             .tls_config_free_fn = null,
+            .tls_reload_fn = null,
             .handle_tls_fn = null,
             .redirect_config_ptr = null,
             .redirect_config_free_fn = null,
@@ -48,10 +46,6 @@ pub const App = struct {
     }
 
     pub fn deinit(self: *App) void {
-        for (self.plugins.items) |p| {
-            if (p.deinit_fn) |deinit_fn| deinit_fn(p.ptr, self.allocator);
-        }
-        self.plugins.deinit(self.allocator);
         if (self.tls_runtime) |ptr| {
             if (self.tls_destroy_fn) |destroy| destroy(ptr);
             self.tls_runtime = null;
@@ -120,186 +114,83 @@ pub const App = struct {
         self.router.all(pattern, handler);
     }
 
-    pub fn use(self: *App, mw: middleware.MiddlewareFn) void {
+    /// Accept a bare MiddlewareFn (or coercible fn type) or a configured Middleware struct.
+    pub fn use(self: *App, mw: anytype) void {
         self.router.use(mw);
     }
 
-    /// Register a global interceptor that wraps all route handlers.
-    pub fn useInterceptor(self: *App, ic: interceptor.InterceptorFn) void {
-        self.router.useInterceptor(ic);
+    /// Create a route group with a URL prefix.
+    pub fn group(self: *App, prefix: []const u8) *@import("router.zig").RouteGroup {
+        return self.router.group(prefix);
     }
 
     pub fn on_error(self: *App, handler: middleware.ErrorHandlerFn) void {
         self.router.setErrorHandler(handler);
     }
 
-    /// Register a plugin. Plugins are installed immediately and activate before
-    /// any call to listen() — safe for non-HTTP use-cases (WS, ORM seeding, etc.).
-    ///
-    /// Pattern A — simple struct by value (no cleanup):
-    ///   The struct must declare `pub const plugin_name`, `pub const plugin_version`,
-    ///   and `pub fn install(self: *T, app: *App) !void`. Must NOT have `deinit`.
-    ///   app.plugin(MyPlugin{ .opt = "value" });
-    ///
-    /// Pattern B — stateful Plugin handle (with optional cleanup):
-    ///   Create via ziez.makePlugin() and pass the result.
-    ///   app.plugin(ziez.makePlugin("name", "1.0.0", T, ptr));
-    pub fn plugin(self: *App, p: anytype) void {
-        const T = @TypeOf(p);
+    // ── Plugin provider registration APIs ──────────────────────────────────────
+    // External plugins call these from their setup/install functions.
 
-        if (T == plugin_mod.Plugin) {
-            p.install_fn(p.ptr, @ptrCast(self)) catch |e| {
-                std.debug.panic("ziez: plugin '{s}@{s}' install failed: {s}", .{
-                    p.name, p.version, @errorName(e),
-                });
-            };
-            if (p.deinit_fn != null) {
-                self.plugins.append(self.allocator, p) catch @panic("ziez: OOM registering plugin");
-            }
-            return;
-        }
-
-        comptime {
-            if (!@hasDecl(T, "plugin_name"))
-                @compileError("Plugin struct '" ++ @typeName(T) ++ "' must declare: pub const plugin_name = \"...\"; ");
-            if (!@hasDecl(T, "plugin_version"))
-                @compileError("Plugin struct '" ++ @typeName(T) ++ "' must declare: pub const plugin_version = \"...\"; ");
-            if (!@hasDecl(T, "install"))
-                @compileError("Plugin struct '" ++ @typeName(T) ++ "' must declare: pub fn install(self: *T, app: *App) !void");
-            if (@hasDecl(T, "deinit"))
-                @compileError("Plugin '" ++ @typeName(T) ++ "' has deinit() — it owns resources. Use ziez.makePlugin() and pass by pointer instead of by value.");
-        }
-        var copy = p;
-        copy.install(self) catch |e| {
-            std.debug.panic("ziez: plugin '{s}@{s}' install failed: {s}", .{
-                T.plugin_name, T.plugin_version, @errorName(e),
-            });
-        };
-    }
-
-    /// Enable rich request/response logging via the tracker module.
-    /// Only compiles tracker module when called; otherwise the built-in basic logger is used.
-    pub fn useTracker(self: *App) void {
-        const TrackerMod = @import("../tracker/mod.zig");
-        self.conn_config.log_request_fn = TrackerMod.logRequestFn;
-    }
-
-    /// Enable response compression. Only compiles compression module when called.
-    pub fn compress(self: *App, config: @import("../compression/mod.zig").CompressionConfig) void {
-        const CompressionMod = @import("../compression/mod.zig");
+    /// For ziez-compression plugin: registers compression provider.
+    pub fn registerCompression(
+        self: *App,
+        config_ptr: *anyopaque,
+        apply_fn: listener.CompressionFn,
+        free_fn: *const fn (*anyopaque, std.mem.Allocator) void,
+    ) void {
         if (self.conn_config.compression_config) |ptr| {
-            if (self.compress_free_fn) |free_fn| free_fn(ptr, self.allocator);
+            if (self.compress_free_fn) |f| f(ptr, self.allocator);
         }
-        const owned = self.allocator.create(CompressionMod.CompressionConfig) catch @panic("ziez: OOM configuring compression");
-        owned.* = config;
-        self.conn_config.compression_config = owned;
-        self.conn_config.compress_fn = CompressionMod.applyFn;
-        self.compress_free_fn = CompressionMod.freeConfigFn;
+        self.conn_config.compression_config = config_ptr;
+        self.conn_config.compress_fn = apply_fn;
+        self.compress_free_fn = free_fn;
     }
 
-    /// Enable HTTPS/TLS. Only compiles TLS module when called.
-    pub fn tls(self: *App, config: @import("../tls/mod.zig").TlsConfig) void {
-        const TlsMod = @import("../tls/mod.zig");
+    /// For ziez-tracker plugin: registers request logging provider.
+    pub fn registerTracker(self: *App, log_fn: listener.LogRequestFn) void {
+        self.conn_config.log_request_fn = log_fn;
+    }
+
+    /// For ziez-tls plugin: registers TLS provider.
+    /// The plugin provides handle_fn which is called per-connection when TLS is active.
+    pub fn registerTls(
+        self: *App,
+        config_ptr: *anyopaque,
+        create_fn: *const fn (*anyopaque, std.mem.Allocator) anyerror!*anyopaque,
+        destroy_fn: *const fn (*anyopaque) void,
+        config_free_fn: *const fn (*anyopaque, std.mem.Allocator) void,
+        reload_fn: *const fn (*anyopaque, *anyopaque) anyerror!void,
+        handle_fn: listener.TlsHandleFn,
+    ) void {
         if (self.tls_config_ptr) |ptr| {
-            if (self.tls_config_free_fn) |free_fn| free_fn(ptr, self.allocator);
+            if (self.tls_config_free_fn) |f| f(ptr, self.allocator);
         }
-        const owned = self.allocator.create(TlsMod.TlsConfig) catch @panic("ziez: OOM configuring TLS");
-        owned.* = config;
-        self.tls_config_ptr = owned;
-        self.tls_config_free_fn = TlsMod.freeConfigFn;
-        self.tls_create_fn = TlsMod.createRuntimeFn;
-        self.tls_destroy_fn = TlsMod.destroyRuntimeFn;
-        self.handle_tls_fn = listener.handleTlsConnection;
+        self.tls_config_ptr = config_ptr;
+        self.tls_config_free_fn = config_free_fn;
+        self.tls_create_fn = create_fn;
+        self.tls_destroy_fn = destroy_fn;
+        self.tls_reload_fn = reload_fn;
+        self.handle_tls_fn = handle_fn;
     }
 
-    /// Enable HTTP→HTTPS redirect. Only compiles TLS module when called.
-    pub fn redirectHttp(self: *App, config: @import("../tls/mod.zig").RedirectHttpConfig) void {
-        const TlsMod = @import("../tls/mod.zig");
+    /// For ziez-tls plugin: registers HTTP→HTTPS redirect.
+    /// The plugin provides run_fn which spawns a dedicated redirect listener thread.
+    pub fn registerRedirectHttp(
+        self: *App,
+        config_ptr: *anyopaque,
+        config_free_fn: *const fn (*anyopaque, std.mem.Allocator) void,
+        run_fn: listener.RedirectRunFn,
+    ) void {
         if (self.redirect_config_ptr) |ptr| {
-            if (self.redirect_config_free_fn) |free_fn| free_fn(ptr, self.allocator);
+            if (self.redirect_config_free_fn) |f| f(ptr, self.allocator);
         }
-        const owned = self.allocator.create(TlsMod.RedirectHttpConfig) catch @panic("ziez: OOM configuring redirect");
-        owned.* = config;
-        self.redirect_config_ptr = owned;
-        self.redirect_config_free_fn = TlsMod.freeRedirectConfigFn;
-        self.run_redirect_fn = listener.runRedirectListenerFn;
-    }
-
-    pub fn reloadTls(self: *App, config: @import("../tls/mod.zig").TlsConfig) !void {
-        const TlsMod = @import("../tls/mod.zig");
-        if (self.tls_config_ptr) |ptr| {
-            const stored: *TlsMod.TlsConfig = @ptrCast(@alignCast(ptr));
-            stored.* = config;
-        } else {
-            const owned = try self.allocator.create(TlsMod.TlsConfig);
-            owned.* = config;
-            self.tls_config_ptr = owned;
-            self.tls_config_free_fn = TlsMod.freeConfigFn;
-        }
-        if (self.tls_runtime) |runtime_ptr| {
-            try TlsMod.reloadRuntimeFn(runtime_ptr, self.tls_config_ptr.?);
-            self.logger.infoFields(.{
-                .component = "tls",
-                .event = "context_reloaded",
-            }, "TLS context reloaded");
-        }
+        self.redirect_config_ptr = config_ptr;
+        self.redirect_config_free_fn = config_free_fn;
+        self.run_redirect_fn = run_fn;
     }
 
     pub fn logging(self: *App, config: log_mod.LoggerConfig) void {
         self.logger.configure(config);
         self.router.logger = self.logger;
     }
-
-    /// Enable global CORS handling.
-    pub fn cors(self: *App, config: @import("../cors/mod.zig").CorsConfig) void {
-        self.router.useCors(config);
-    }
-
-    /// Configure security headers and XSS sanitization.
-    pub fn security(self: *App, config: @import("../security/mod.zig").SecurityConfig) void {
-        self.router.useSecurity(config);
-    }
-
-    /// Serve static files from a directory.
-    pub fn serveStatic(self: *App, config: @import("../static/mod.zig").StaticConfig) void {
-        self.router.useStatic(config);
-    }
-
-    /// Register a template engine for server-side rendering.
-    pub fn setTemplateEngine(self: *App, engine: *@import("../template/mod.zig").TemplateEngine) void {
-        self.router.setTemplateEngine(engine);
-    }
 };
-
-/// Create a type-erased Plugin handle for Pattern B (stateful plugins with cleanup).
-///
-/// T must have:
-///   pub fn install(self: *T, app: *App) !void
-/// Optionally:
-///   pub fn deinit(self: *T, alloc: std.mem.Allocator) void
-///
-/// The caller is responsible for keeping `ptr` alive until app.deinit() is called.
-pub fn makePlugin(name: []const u8, version: []const u8, comptime T: type, ptr: *T) plugin_mod.Plugin {
-    comptime {
-        if (!@hasDecl(T, "install"))
-            @compileError("Type '" ++ @typeName(T) ++ "' passed to makePlugin must have: pub fn install(self: *T, app: *App) !void");
-    }
-    const Wrapper = struct {
-        fn install(plugin_ptr: *anyopaque, app_ptr: *anyopaque) anyerror!void {
-            const self: *T = @ptrCast(@alignCast(plugin_ptr));
-            const app: *App = @ptrCast(@alignCast(app_ptr));
-            return self.install(app);
-        }
-        fn deinit_wrapper(plugin_ptr: *anyopaque, alloc: std.mem.Allocator) void {
-            const self: *T = @ptrCast(@alignCast(plugin_ptr));
-            self.deinit(alloc);
-        }
-    };
-    return .{
-        .name = name,
-        .version = version,
-        .ptr = ptr,
-        .install_fn = Wrapper.install,
-        .deinit_fn = if (@hasDecl(T, "deinit")) Wrapper.deinit_wrapper else null,
-    };
-}

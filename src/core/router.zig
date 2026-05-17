@@ -3,7 +3,6 @@ const util = @import("util.zig");
 const Request = @import("request.zig").Request;
 const Response = @import("response.zig").Response;
 const middleware = @import("middleware.zig");
-const interceptor = @import("interceptor.zig");
 const exceptions = @import("exceptions.zig");
 const hook_mod = @import("hook.zig");
 const logging = @import("logging.zig");
@@ -11,6 +10,7 @@ const logging = @import("logging.zig");
 pub const Route = struct {
     pattern: []const u8,
     handler: middleware.HandlerFn,
+    group_mw: ?*const middleware.MiddlewareList = null,
 };
 
 pub const Router = struct {
@@ -33,8 +33,8 @@ pub const Router = struct {
     mw: middleware.MiddlewareList,
     allocator: std.mem.Allocator,
     error_handler: ?middleware.ErrorHandlerFn,
-    global_interceptors: std.ArrayList(interceptor.InterceptorFn),
     hooks: std.ArrayListUnmanaged(hook_mod.RequestHook),
+    groups: std.ArrayListUnmanaged(*RouteGroup),
     logger: logging.Logger,
     lifecycle_trace: bool = false,
 
@@ -66,8 +66,8 @@ pub const Router = struct {
             .mw = middleware.MiddlewareList.init(allocator),
             .allocator = allocator,
             .error_handler = null,
-            .global_interceptors = .empty,
             .hooks = .empty,
+            .groups = .empty,
             .logger = logger,
         };
     }
@@ -90,9 +90,10 @@ pub const Router = struct {
         self.static_options.deinit();
         self.static_all.deinit();
         self.mw.deinit();
-        self.global_interceptors.deinit(self.allocator);
         for (self.hooks.items) |h| h.deinit(h.ptr, self.allocator);
         self.hooks.deinit(self.allocator);
+        for (self.groups.items) |g| g.deinit(self.allocator);
+        self.groups.deinit(self.allocator);
         self.logger.deinit();
     }
 
@@ -167,41 +168,37 @@ pub const Router = struct {
         self.addRoute(.ALL, pattern, handler);
     }
 
-    pub fn use(self: *Router, mw: middleware.MiddlewareFn) void {
-        self.mw.push(mw) catch |e| {
+    /// Accept a bare MiddlewareFn (or coercible fn type) or a configured Middleware struct.
+    pub fn use(self: *Router, mw: anytype) void {
+        const T = @TypeOf(mw);
+        if (T == middleware.Middleware) {
+            self.mw.pushMiddleware(mw) catch |e| {
+                std.debug.print("ziez: failed to add middleware: {}\n", .{e});
+            };
+            return;
+        }
+        const fn_ptr: middleware.MiddlewareFn = mw;
+        self.mw.pushMiddleware(middleware.Middleware.wrapRuntime(fn_ptr)) catch |e| {
             std.debug.print("ziez: failed to add middleware: {}\n", .{e});
         };
     }
 
-    /// Register a global interceptor that wraps all route handlers.
-    pub fn useInterceptor(self: *Router, ic: interceptor.InterceptorFn) void {
-        self.global_interceptors.append(self.allocator, ic) catch |e| {
-            std.debug.print("ziez: failed to add interceptor: {}\n", .{e});
-        };
+    /// Register a type-erased request hook. Used by external plugins.
+    /// Hooks run before middleware in registration order; return false to short-circuit.
+    pub fn addHook(self: *Router, hook: hook_mod.RequestHook) !void {
+        try self.hooks.append(self.allocator, hook);
     }
 
     pub fn setErrorHandler(self: *Router, handler: middleware.ErrorHandlerFn) void {
         self.error_handler = handler;
     }
 
-    pub fn useCors(self: *Router, config: @import("../cors/mod.zig").CorsConfig) void {
-        const h = @import("../cors/mod.zig").asHook(self.allocator, config);
-        self.hooks.append(self.allocator, h) catch @panic("ziez: OOM adding CORS hook");
-    }
-
-    pub fn useSecurity(self: *Router, config: @import("../security/mod.zig").SecurityConfig) void {
-        const h = @import("../security/mod.zig").asHook(self.allocator, config);
-        self.hooks.append(self.allocator, h) catch @panic("ziez: OOM adding security hook");
-    }
-
-    pub fn useStatic(self: *Router, config: @import("../static/mod.zig").StaticConfig) void {
-        const h = @import("../static/mod.zig").asHook(self.allocator, config);
-        self.hooks.append(self.allocator, h) catch @panic("ziez: OOM adding static hook");
-    }
-
-    pub fn setTemplateEngine(self: *Router, engine: *@import("../template/mod.zig").TemplateEngine) void {
-        const h = @import("../template/mod.zig").asHook(engine);
-        self.hooks.append(self.allocator, h) catch @panic("ziez: OOM adding template hook");
+    /// Create a route group with a URL prefix. The group is owned by the router.
+    pub fn group(self: *Router, prefix: []const u8) *RouteGroup {
+        const g = self.allocator.create(RouteGroup) catch @panic("ziez: OOM creating RouteGroup");
+        g.* = RouteGroup.init(self, prefix);
+        self.groups.append(self.allocator, g) catch @panic("ziez: OOM appending RouteGroup");
+        return g;
     }
 
     pub fn handle(self: *Router, req: *Request, res: *Response) void {
@@ -243,12 +240,12 @@ pub const Router = struct {
         };
         if (static_map.get(req.path)) |route| {
             req.params = .{};
-            self.trace(req, .{
+            trace(self, req, .{
                 .event = "route_matched",
                 .route_method = @tagName(req.method),
                 .route_pattern = route.pattern,
             }, "route matched");
-            self.executeHandler(req, res, route, @tagName(req.method));
+            executeHandler(self, req, res, route, @tagName(req.method));
             return;
         }
 
@@ -258,236 +255,331 @@ pub const Router = struct {
         // Try ALL-method routes as fallback
         if (self.static_all.get(req.path)) |route| {
             req.params = .{};
-            self.trace(req, .{ .event = "route_matched", .route_method = "ALL", .route_pattern = route.pattern }, "route matched");
-            self.executeHandler(req, res, route, "ALL");
+            trace(self, req, .{ .event = "route_matched", .route_method = "ALL", .route_pattern = route.pattern }, "route matched");
+            executeHandler(self, req, res, route, "ALL");
             return;
         }
         if (self.all_routes.items.len > 0) {
             if (dispatchParameterized(self, self.all_routes.items, req, res, "ALL")) return;
         }
 
-        // 404 - no route matched
-        self.trace(req, .{ .event = "route_not_found" }, "route not found");
-        res.status(404).json(.{ .@"error" = "Not Found", .statusCode = 404 });
-    }
-
-    /// Dispatch against parameterized routes only.
-    fn dispatchParameterized(self: *Router, routes: []const Route, req: *Request, res: *Response, method_tag: []const u8) bool {
-        for (routes) |route| {
-            if (isStaticRoute(route.pattern)) continue;
-            const result = util.matchRoute(route.pattern, req.path) orelse continue;
-            req.params = result;
-
-            self.trace(req, .{
-                .event = "route_matched",
-                .route_method = method_tag,
-                .route_pattern = route.pattern,
-            }, "route matched");
-
-            self.executeHandler(req, res, route, method_tag);
-            return true;
-        }
-
-        return false;
-    }
-
-    fn executeHandler(self: *Router, req: *Request, res: *Response, route: Route, method_tag: []const u8) void {
-        if (self.global_interceptors.items.len > 0) {
-            self.handleWithInterceptors(req, res, route, method_tag) catch |err| {
-                self.handleError(req, res, err);
-                return;
-            };
-        } else {
-            self.trace(req, .{
-                .event = "handler_enter",
-                .route_method = method_tag,
-                .route_pattern = route.pattern,
-            }, "handler enter");
-            route.handler(req, res) catch |err| {
-                self.handleError(req, res, err);
-                return;
-            };
-            self.trace(req, .{
-                .event = "handler_exit",
-                .route_method = method_tag,
-                .route_pattern = route.pattern,
-            }, "handler exit");
-        }
-
-        if (!res.sent and !res.streaming) {
-            self.handleError(req, res, error.InternalServerError);
-        }
-    }
-
-    /// Returns true if the route pattern contains no parameters (`:param`) or wildcards (`*`).
-    fn isStaticRoute(pattern: []const u8) bool {
-        for (pattern) |ch| {
-            if (ch == ':' or ch == '*') return false;
-        }
-        return true;
-    }
-
-    fn handleWithInterceptors(
-        self: *@This(),
-        req: *Request,
-        res: *Response,
-        route: Route,
-        method_tag: []const u8,
-    ) anyerror!void {
-        var chain = interceptor.InterceptorChain.init(
-            self.global_interceptors.items,
-            route.handler,
-        );
-        chain.trace = .{
-            .enter = if (self.lifecycle_trace) traceInterceptorEnter else null,
-            .exit = if (self.lifecycle_trace) traceInterceptorExit else null,
-            .handler_enter = if (self.lifecycle_trace) traceHandlerEnter else null,
-            .handler_exit = if (self.lifecycle_trace) traceHandlerExit else null,
-        };
-        var ctx = interceptor.InterceptorCtx{
-            .req = req,
-            .res = res,
-            ._chain = &chain,
-        };
-        self.trace(req, .{
-            .event = "interceptor_chain_start",
-            .route_method = method_tag,
-            .route_pattern = route.pattern,
-            .count = self.global_interceptors.items.len,
-        }, "interceptor chain start");
-        try ctx.proceed();
-    }
-
-    fn handleError(self: *Router, req: *Request, res: *Response, err: anyerror) void {
-        if (res.sent) return;
-
-        const info = exceptions.errorToResponse(err);
-        if (info.code >= 500) {
-            self.logger.errorFields(.{
-                .component = "router",
-                .event = "error_caught",
-                .req_id = req.request_id,
-                .path = req.path,
-                .status = info.code,
-                .@"error" = @errorName(err),
-            }, "router error");
-        }
-        self.trace(req, .{
-            .event = "error_caught",
-            .status = info.code,
-            .@"error" = @errorName(err),
-        }, "error caught");
-
-        // Custom error handler takes priority
-        if (self.error_handler) |handler| {
-            self.trace(req, .{ .event = "error_handler_enter" }, "error handler enter");
-            handler(req, res, err);
-            self.trace(req, .{ .event = "error_handler_exit" }, "error handler exit");
-            if (!res.sent) {
-                self.sendDefaultError(res, err);
-            }
+        // 405 — path exists for other methods?
+        var allow_buf: [128]u8 = undefined;
+        if (self.hasPathForOtherMethods(req.path, req.method, &allow_buf)) |allow_header| {
+            _ = res.set("Allow", allow_header);
+            trace(self, req, .{ .event = "method_not_allowed" }, "method not allowed");
+            res.status(405).json(.{ .@"error" = "Method Not Allowed", .statusCode = 405 });
             return;
         }
 
-        self.sendDefaultError(res, err);
+        // 404 — no route matched
+        trace(self, req, .{ .event = "route_not_found" }, "route not found");
+        res.status(404).json(.{ .@"error" = "Not Found", .statusCode = 404 });
     }
 
-    fn sendDefaultError(self: *const Router, res: *Response, err: anyerror) void {
-        _ = self;
-        const info = exceptions.errorToResponse(err);
-        const msg = res.error_message orelse info.message;
-        res.status(info.code).json(.{
-            .statusCode = info.code,
-            .@"error" = msg,
-        });
-    }
-
-    fn trace(self: *const Router, req: *const Request, fields: anytype, msg: []const u8) void {
-        if (!self.lifecycle_trace) return;
-        self.logger.debugFields(.{
-            .component = "router",
-            .req_id = req.request_id,
-            .path = req.path,
-            .method = @tagName(req.method),
-            .trace = fields,
-        }, msg);
-    }
-
-    fn traceMiddlewareEnter(index: usize, req: *Request, res: *Response) void {
-        logLifecycleFromResponse(res, .{
-            .event = "middleware_enter",
-            .index = index,
-            .req_id = req.request_id,
-            .path = req.path,
-            .method = @tagName(req.method),
-        }, "middleware enter");
-    }
-
-    fn traceMiddlewareExit(index: usize, req: *Request, res: *Response) void {
-        logLifecycleFromResponse(res, .{
-            .event = "middleware_exit",
-            .index = index,
-            .req_id = req.request_id,
-            .path = req.path,
-            .method = @tagName(req.method),
-        }, "middleware exit");
-    }
-
-    fn traceMiddlewareShortCircuit(index: usize, req: *Request, res: *Response) void {
-        logLifecycleFromResponse(res, .{
-            .event = "middleware_short_circuit",
-            .index = index,
-            .req_id = req.request_id,
-            .path = req.path,
-            .method = @tagName(req.method),
-            .status = res.status_code,
-            .sent = res.sent,
-        }, "middleware short circuit");
-    }
-
-    fn traceInterceptorEnter(index: usize, req: *Request, res: *Response) void {
-        logLifecycleFromResponse(res, .{
-            .event = "interceptor_enter",
-            .index = index,
-            .req_id = req.request_id,
-            .path = req.path,
-            .method = @tagName(req.method),
-        }, "interceptor enter");
-    }
-
-    fn traceInterceptorExit(index: usize, req: *Request, res: *Response) void {
-        logLifecycleFromResponse(res, .{
-            .event = "interceptor_exit",
-            .index = index,
-            .req_id = req.request_id,
-            .path = req.path,
-            .method = @tagName(req.method),
-            .status = res.status_code,
-        }, "interceptor exit");
-    }
-
-    fn traceHandlerEnter(req: *Request, res: *Response) void {
-        logLifecycleFromResponse(res, .{
-            .event = "handler_enter",
-            .req_id = req.request_id,
-            .path = req.path,
-            .method = @tagName(req.method),
-        }, "handler enter");
-    }
-
-    fn traceHandlerExit(req: *Request, res: *Response) void {
-        logLifecycleFromResponse(res, .{
-            .event = "handler_exit",
-            .req_id = req.request_id,
-            .path = req.path,
-            .method = @tagName(req.method),
-            .status = res.status_code,
-        }, "handler exit");
-    }
-
-    fn logLifecycleFromResponse(res: *Response, fields: anytype, msg: []const u8) void {
-        if (res.logger) |logger| {
-            logger.debugFields(.{ .component = "router", .trace = fields }, msg);
+    /// Returns a comma-separated Allow header value if the path matches routes
+    /// for any method other than the current one; otherwise null.
+    /// `buf` must be caller-owned and live at least as long as the returned slice.
+    fn hasPathForOtherMethods(self: *const Router, path: []const u8, current: util.HttpMethod, buf: []u8) ?[]const u8 {
+        const all_methods = [_]struct { method: util.HttpMethod, tag: []const u8 }{
+            .{ .method = .GET, .tag = "GET" },
+            .{ .method = .POST, .tag = "POST" },
+            .{ .method = .PUT, .tag = "PUT" },
+            .{ .method = .DELETE, .tag = "DELETE" },
+            .{ .method = .PATCH, .tag = "PATCH" },
+            .{ .method = .HEAD, .tag = "HEAD" },
+            .{ .method = .OPTIONS, .tag = "OPTIONS" },
+        };
+        var len: usize = 0;
+        for (all_methods) |entry| {
+            if (entry.method == current) continue;
+            const routes = routesForMethod(self, entry.method);
+            const static_map = staticMapForMethod(self, entry.method);
+            var found = false;
+            if (static_map.get(path) != null) {
+                found = true;
+            } else {
+                for (routes) |route| {
+                    if (util.matchRoute(route.pattern, path) != null) {
+                        found = true;
+                        break;
+                    }
+                }
+            }
+            if (found) {
+                if (len > 0 and len + 2 < buf.len) {
+                    buf[len] = ',';
+                    buf[len + 1] = ' ';
+                    len += 2;
+                }
+                if (len + entry.tag.len < buf.len) {
+                    @memcpy(buf[len .. len + entry.tag.len], entry.tag);
+                    len += entry.tag.len;
+                }
+            }
         }
+        if (len == 0) return null;
+        return buf[0..len];
     }
 };
+
+// ---------------------------------------------------------------------------
+// RouteGroup — prefix-scoped routes with optional middleware
+// ---------------------------------------------------------------------------
+
+pub const RouteGroup = struct {
+    router: *Router,
+    prefix: []const u8,
+    mw: middleware.MiddlewareList,
+    /// Patterns allocated during group route registration (freed on deinit).
+    allocated_patterns: std.ArrayList([]const u8),
+
+    pub fn init(router: *Router, prefix: []const u8) RouteGroup {
+        const owned = router.allocator.dupe(u8, prefix) catch @panic("ziez: OOM duping group prefix");
+        return .{
+            .router = router,
+            .prefix = owned,
+            .mw = middleware.MiddlewareList.init(router.allocator),
+            .allocated_patterns = .empty,
+        };
+    }
+
+    pub fn deinit(self: *RouteGroup, allocator: std.mem.Allocator) void {
+        allocator.free(self.prefix);
+        self.mw.deinit();
+        for (self.allocated_patterns.items) |p| allocator.free(p);
+        self.allocated_patterns.deinit(allocator);
+        allocator.destroy(self);
+    }
+
+    /// Add a bare MiddlewareFn (or coercible fn type) or a configured Middleware to this group.
+    pub fn use(self: *RouteGroup, mw_item: anytype) void {
+        const T = @TypeOf(mw_item);
+        if (T == middleware.Middleware) {
+            self.mw.pushMiddleware(mw_item) catch {};
+            return;
+        }
+        const fn_ptr: middleware.MiddlewareFn = mw_item;
+        self.mw.pushMiddleware(middleware.Middleware.wrapRuntime(fn_ptr)) catch {};
+    }
+
+    pub fn get(self: *RouteGroup, pattern: []const u8, handler: middleware.HandlerFn) void {
+        self.addRoute(.GET, pattern, handler);
+    }
+    pub fn post(self: *RouteGroup, pattern: []const u8, handler: middleware.HandlerFn) void {
+        self.addRoute(.POST, pattern, handler);
+    }
+    pub fn put(self: *RouteGroup, pattern: []const u8, handler: middleware.HandlerFn) void {
+        self.addRoute(.PUT, pattern, handler);
+    }
+    pub fn delete(self: *RouteGroup, pattern: []const u8, handler: middleware.HandlerFn) void {
+        self.addRoute(.DELETE, pattern, handler);
+    }
+    pub fn patch(self: *RouteGroup, pattern: []const u8, handler: middleware.HandlerFn) void {
+        self.addRoute(.PATCH, pattern, handler);
+    }
+    pub fn all(self: *RouteGroup, pattern: []const u8, handler: middleware.HandlerFn) void {
+        self.addRoute(.ALL, pattern, handler);
+    }
+
+    /// Create a sub-group with an extended prefix.
+    pub fn group(self: *RouteGroup, sub_prefix: []const u8) *RouteGroup {
+        const full = std.fmt.allocPrint(self.router.allocator, "{s}{s}", .{ self.prefix, sub_prefix }) catch @panic("ziez: OOM");
+        defer self.router.allocator.free(full);
+        return self.router.group(full); // init() dupes the prefix so free is safe
+    }
+
+    fn addRoute(self: *RouteGroup, method: util.HttpMethod, pattern: []const u8, handler: middleware.HandlerFn) void {
+        const full = std.fmt.allocPrint(self.router.allocator, "{s}{s}", .{ self.prefix, pattern }) catch return;
+        self.allocated_patterns.append(self.router.allocator, full) catch {
+            self.router.allocator.free(full);
+            return;
+        };
+        const route = Route{
+            .pattern = full,
+            .handler = handler,
+            .group_mw = if (self.mw.items.items.len > 0) &self.mw else null,
+        };
+        const list = switch (method) {
+            .GET => &self.router.get_routes,
+            .POST => &self.router.post_routes,
+            .PUT => &self.router.put_routes,
+            .DELETE => &self.router.delete_routes,
+            .PATCH => &self.router.patch_routes,
+            .HEAD => &self.router.head_routes,
+            .OPTIONS => &self.router.options_routes,
+            .ALL => &self.router.all_routes,
+        };
+        list.append(self.router.allocator, route) catch {};
+    }
+};
+
+fn routesForMethod(self: *const Router, method: util.HttpMethod) []const Route {
+    return switch (method) {
+        .GET => self.get_routes.items,
+        .POST => self.post_routes.items,
+        .PUT => self.put_routes.items,
+        .DELETE => self.delete_routes.items,
+        .PATCH => self.patch_routes.items,
+        .HEAD => self.head_routes.items,
+        .OPTIONS => self.options_routes.items,
+        .ALL => self.all_routes.items,
+    };
+}
+
+fn staticMapForMethod(self: *const Router, method: util.HttpMethod) std.StringHashMap(Route) {
+    return switch (method) {
+        .GET => self.static_get,
+        .POST => self.static_post,
+        .PUT => self.static_put,
+        .DELETE => self.static_delete,
+        .PATCH => self.static_patch,
+        .HEAD => self.static_head,
+        .OPTIONS => self.static_options,
+        .ALL => self.static_all,
+    };
+}
+
+/// Dispatch against parameterized routes only.
+fn dispatchParameterized(self: *Router, routes: []const Route, req: *Request, res: *Response, method_tag: []const u8) bool {
+    for (routes) |route| {
+        const result = util.matchRoute(route.pattern, req.path) orelse continue;
+        req.params = result;
+
+        trace(self, req, .{
+            .event = "route_matched",
+            .route_method = method_tag,
+            .route_pattern = route.pattern,
+        }, "route matched");
+
+        executeHandler(self, req, res, route, method_tag);
+        return true;
+    }
+
+    return false;
+}
+
+fn executeHandler(self: *Router, req: *Request, res: *Response, route: Route, method_tag: []const u8) void {
+    if (route.group_mw) |gm| {
+        if (!gm.execute(req, res)) return;
+    }
+    trace(self, req, .{
+        .event = "handler_enter",
+        .route_method = method_tag,
+        .route_pattern = route.pattern,
+    }, "handler enter");
+    route.handler(req, res) catch |err| {
+        handleError(self, req, res, err);
+        return;
+    };
+    trace(self, req, .{
+        .event = "handler_exit",
+        .route_method = method_tag,
+        .route_pattern = route.pattern,
+    }, "handler exit");
+
+    if (!res.sent and !res.streaming) {
+        handleError(self, req, res, error.InternalServerError);
+    }
+}
+
+/// Returns true if the route pattern contains no parameters (`:param`) or wildcards (`*`).
+fn isStaticRoute(pattern: []const u8) bool {
+    for (pattern) |ch| {
+        if (ch == ':' or ch == '*') return false;
+    }
+    return true;
+}
+
+fn handleError(self: *Router, req: *Request, res: *Response, err: anyerror) void {
+    if (res.sent) return;
+
+    const info = exceptions.errorToResponse(err);
+    if (info.code >= 500) {
+        self.logger.errorFields(.{
+            .component = "router",
+            .event = "error_caught",
+            .req_id = req.request_id,
+            .path = req.path,
+            .status = info.code,
+            .@"error" = @errorName(err),
+        }, "router error");
+    }
+    trace(self, req, .{
+        .event = "error_caught",
+        .status = info.code,
+        .@"error" = @errorName(err),
+    }, "error caught");
+
+    // Custom error handler takes priority
+    if (self.error_handler) |handler| {
+        trace(self, req, .{ .event = "error_handler_enter" }, "error handler enter");
+        handler(req, res, err);
+        trace(self, req, .{ .event = "error_handler_exit" }, "error handler exit");
+        if (!res.sent) {
+            sendDefaultError(self, res, err);
+        }
+        return;
+    }
+
+    sendDefaultError(self, res, err);
+}
+
+fn sendDefaultError(self: *const Router, res: *Response, err: anyerror) void {
+    _ = self;
+    const info = exceptions.errorToResponse(err);
+    const msg = res.error_message orelse info.message;
+    res.status(info.code).json(.{
+        .statusCode = info.code,
+        .@"error" = msg,
+    });
+}
+
+fn trace(self: *const Router, req: *const Request, fields: anytype, msg: []const u8) void {
+    if (!self.lifecycle_trace) return;
+    self.logger.debugFields(.{
+        .component = "router",
+        .req_id = req.request_id,
+        .path = req.path,
+        .method = @tagName(req.method),
+        .trace = fields,
+    }, msg);
+}
+
+fn traceMiddlewareEnter(index: usize, req: *Request, res: *Response) void {
+    logLifecycleFromResponse(res, .{
+        .event = "middleware_enter",
+        .index = index,
+        .req_id = req.request_id,
+        .path = req.path,
+        .method = @tagName(req.method),
+    }, "middleware enter");
+}
+
+fn traceMiddlewareExit(index: usize, req: *Request, res: *Response) void {
+    logLifecycleFromResponse(res, .{
+        .event = "middleware_exit",
+        .index = index,
+        .req_id = req.request_id,
+        .path = req.path,
+        .method = @tagName(req.method),
+    }, "middleware exit");
+}
+
+fn traceMiddlewareShortCircuit(index: usize, req: *Request, res: *Response) void {
+    logLifecycleFromResponse(res, .{
+        .event = "middleware_short_circuit",
+        .index = index,
+        .req_id = req.request_id,
+        .path = req.path,
+        .method = @tagName(req.method),
+        .status = res.status_code,
+        .sent = res.sent,
+    }, "middleware short circuit");
+}
+
+fn logLifecycleFromResponse(res: *Response, fields: anytype, msg: []const u8) void {
+    if (res.logger) |logger| {
+        logger.debugFields(.{ .component = "router", .trace = fields }, msg);
+    }
+}

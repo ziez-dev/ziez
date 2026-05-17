@@ -90,7 +90,7 @@ test "Routing: multiple params /orgs/:org/repos/:repo both extracted" {
     try testing.expectEqualStrings("core", observed_param2);
 }
 
-test "Routing: POST on GET-only route returns 404" {
+test "Routing: POST on GET-only route returns 405 Method Not Allowed" {
     reset();
     var router = ziez.Router.initSilent(testing.allocator);
     defer router.deinit();
@@ -100,7 +100,7 @@ test "Routing: POST on GET-only route returns 404" {
     var res = ziez.Response.init(testing.allocator);
     router.handle(&req, &res);
 
-    try testing.expectEqual(@as(u16, 404), res.status_code);
+    try testing.expectEqual(@as(u16, 405), res.status_code);
     try testing.expect(!handler_called);
 }
 

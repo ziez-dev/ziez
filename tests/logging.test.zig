@@ -61,12 +61,6 @@ const passMiddleware: ziez.MiddlewareFn = struct {
     }
 }.handler;
 
-const passInterceptor: ziez.InterceptorFn = struct {
-    fn call(ctx: *ziez.InterceptorCtx) anyerror!void {
-        try ctx.proceed();
-    }
-}.call;
-
 test "Logger emits JSON and redacts nested fields" {
     var capture = Capture.init(std.testing.allocator);
     defer capture.deinit();
@@ -125,29 +119,7 @@ test "App logging defaults: level is info" {
     try std.testing.expectEqual(ziez.LogLevel.info, cfg.level);
 }
 
-test "Logger request summary emits expected schema" {
-        var capture = Capture.init(std.testing.allocator);
-        defer capture.deinit();
-        var logger = ziez.Logger.init(std.testing.allocator, .{ .level = .info, .sink = capture.sink() });
-        defer logger.deinit();
-        ziez.logRequestSummary(logger, .{
-            .req_id = "req-123",
-            .method = "GET",
-            .path = "/users",
-            .status = 200,
-            .response_time_ms = 12.5,
-            .user_agent = "curl/8.0.0",
-            .content_length = 42,
-        });
-        try std.testing.expect(contains(capture.buf.items, "\"event\":\"request_completed\""));
-        try std.testing.expect(contains(capture.buf.items, "\"req_id\":\"req-123\""));
-        try std.testing.expect(contains(capture.buf.items, "\"method\":\"GET\""));
-        try std.testing.expect(contains(capture.buf.items, "\"path\":\"/users\""));
-        try std.testing.expect(contains(capture.buf.items, "\"status\":200"));
-        try std.testing.expect(contains(capture.buf.items, "\"response_time_ms\":12.5"));
-}
-
-test "Router lifecycle trace emits middleware, interceptor, and handler events" {
+test "Router lifecycle trace emits middleware and handler events" {
     var capture = Capture.init(std.testing.allocator);
     defer capture.deinit();
 
@@ -159,7 +131,6 @@ test "Router lifecycle trace emits middleware, interceptor, and handler events" 
         .sink = capture.sink(),
     });
     router.use(passMiddleware);
-    router.useInterceptor(passInterceptor);
     router.get("/items/:id", okHandler);
 
     var req = makeRequest(
@@ -175,8 +146,6 @@ test "Router lifecycle trace emits middleware, interceptor, and handler events" 
     try std.testing.expect(contains(capture.buf.items, "\"event\":\"route_matched\""));
     try std.testing.expect(contains(capture.buf.items, "\"event\":\"middleware_enter\""));
     try std.testing.expect(contains(capture.buf.items, "\"event\":\"middleware_exit\""));
-    try std.testing.expect(contains(capture.buf.items, "\"event\":\"interceptor_enter\""));
-    try std.testing.expect(contains(capture.buf.items, "\"event\":\"interceptor_exit\""));
     try std.testing.expect(contains(capture.buf.items, "\"event\":\"handler_enter\""));
     try std.testing.expect(contains(capture.buf.items, "\"event\":\"handler_exit\""));
     try std.testing.expect(contains(capture.buf.items, "\"req_id\":\"req-lifecycle\""));

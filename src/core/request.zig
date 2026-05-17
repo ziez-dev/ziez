@@ -97,6 +97,11 @@ pub const Request = struct {
         return self.params.get(name);
     }
 
+    /// Returns the per-request arena allocator. All allocations are freed at end of request.
+    pub fn arena(self: *Request) std.mem.Allocator {
+        return self.allocator;
+    }
+
     pub fn assignRequestId(self: *Request, next_id: u64) void {
         if (self.header("x-request-id")) |existing| {
             self.request_id = existing;

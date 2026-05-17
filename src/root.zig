@@ -1,24 +1,45 @@
 const std = @import("std");
 
+// ── Core ──────────────────────────────────────────────────────────────────────
 pub const App = @import("core/app.zig").App;
-pub const Env = @import("core/env.zig").Env;
-pub const getProcessEnv = @import("core/env.zig").getProcessEnv;
+pub const Router = @import("core/router.zig").Router;
+pub const RouteGroup = @import("core/router.zig").RouteGroup;
 pub const Request = @import("core/request.zig").Request;
 pub const Response = @import("core/response.zig").Response;
 pub const Next = @import("core/middleware.zig").Next;
-pub const Router = @import("core/router.zig").Router;
-pub const HttpMethod = @import("core/util.zig").HttpMethod;
+pub const Middleware = @import("core/middleware.zig").Middleware;
+pub const MiddlewareFn = @import("core/middleware.zig").MiddlewareFn;
 pub const HandlerFn = @import("core/middleware.zig").HandlerFn;
+pub const ErrorHandlerFn = @import("core/middleware.zig").ErrorHandlerFn;
+pub const HttpMethod = @import("core/util.zig").HttpMethod;
 pub const FileStat = @import("core/platform.zig").FileStat;
 pub const platform = @import("core/platform.zig");
-pub const MiddlewareFn = @import("core/middleware.zig").MiddlewareFn;
-pub const ErrorHandlerFn = @import("core/middleware.zig").ErrorHandlerFn;
-pub const Multipart = @import("multipart/mod.zig").Multipart;
-pub const Part = @import("multipart/mod.zig").Part;
-pub const FormField = @import("multipart/mod.zig").FormField;
-pub const UploadedFile = @import("multipart/mod.zig").UploadedFile;
-pub const MultipartUpload = @import("multipart/mod.zig").MultipartUpload;
-pub const UploadConfig = @import("multipart/mod.zig").UploadConfig;
+
+// ── Plugin provider types (for external plugin install functions) ──────────────
+pub const RequestHook = @import("core/hook.zig").RequestHook;
+pub const LogRequestFn = @import("core/listener.zig").LogRequestFn;
+pub const CompressionFn = @import("core/listener.zig").CompressionFn;
+pub const TlsHandleFn = @import("core/listener.zig").TlsHandleFn;
+pub const RedirectRunFn = @import("core/listener.zig").RedirectRunFn;
+
+// ── Env ───────────────────────────────────────────────────────────────────────
+pub const Env = @import("core/env.zig").Env;
+pub const getProcessEnv = @import("core/env.zig").getProcessEnv;
+
+// ── Exceptions ────────────────────────────────────────────────────────────────
+pub const Exception = @import("core/exceptions.zig").Exception;
+pub const HttpError = @import("core/exceptions.zig").HttpError;
+pub const errorToResponse = @import("core/exceptions.zig").errorToResponse;
+pub const throw = @import("core/exceptions.zig").throw;
+
+// ── Logging ───────────────────────────────────────────────────────────────────
+pub const logging = @import("core/logging.zig");
+pub const Logger = @import("core/logging.zig").Logger;
+pub const LoggerConfig = @import("core/logging.zig").LoggerConfig;
+pub const LogLevel = @import("core/logging.zig").LogLevel;
+pub const LogSink = @import("core/logging.zig").Sink;
+
+// ── URL / query utilities ─────────────────────────────────────────────────────
 pub const FormParams = @import("core/util.zig").FormParams;
 pub const Params = @import("core/util.zig").Params;
 pub const QueryParams = @import("core/util.zig").QueryParams;
@@ -27,18 +48,36 @@ pub const parseQuery = @import("core/util.zig").parseQuery;
 pub const parseForm = @import("core/util.zig").parseForm;
 pub const splitPathQuery = @import("core/util.zig").splitPathQuery;
 pub const percentDecode = @import("core/util.zig").percentDecode;
-pub const Exception = @import("core/exceptions.zig").Exception;
-pub const HttpError = @import("core/exceptions.zig").HttpError;
-pub const errorToResponse = @import("core/exceptions.zig").errorToResponse;
-pub const throw = @import("core/exceptions.zig").throw;
+
+// ── Cookie utilities ──────────────────────────────────────────────────────────
+pub const Cookies = @import("core/util.zig").Cookies;
+pub const CookieOptions = @import("core/util.zig").CookieOptions;
+pub const SameSite = @import("core/util.zig").SameSite;
+pub const parseCookies = @import("core/util.zig").parseCookies;
+pub const formatSetCookie = @import("core/util.zig").formatSetCookie;
+pub const signCookie = @import("core/util.zig").signCookie;
+pub const verifySignedCookie = @import("core/util.zig").verifySignedCookie;
+
+// ── Multipart ─────────────────────────────────────────────────────────────────
+pub const Multipart = @import("multipart/mod.zig").Multipart;
+pub const Part = @import("multipart/mod.zig").Part;
+pub const FormField = @import("multipart/mod.zig").FormField;
+pub const UploadedFile = @import("multipart/mod.zig").UploadedFile;
+pub const MultipartUpload = @import("multipart/mod.zig").MultipartUpload;
+pub const UploadConfig = @import("multipart/mod.zig").UploadConfig;
+
+// ── Serializer ────────────────────────────────────────────────────────────────
 pub const SerializerConfig = @import("serializer/mod.zig").SerializerConfig;
 pub const serialize = @import("serializer/mod.zig").serialize;
 pub const serializeMany = @import("serializer/mod.zig").serializeMany;
-pub const InterceptorCtx = @import("core/interceptor.zig").InterceptorCtx;
-pub const InterceptorFn = @import("core/interceptor.zig").InterceptorFn;
-pub const InterceptorChain = @import("core/interceptor.zig").InterceptorChain;
-pub const intercept = @import("core/interceptor.zig").intercept;
 pub const serialized = @import("core/interceptor.zig").serialized;
+
+// ── Validator / Schema ────────────────────────────────────────────────────────
+pub const validator = @import("validator/mod.zig");
+pub const schema = @import("validator/schema.zig");
+
+// ── Pipe helpers ──────────────────────────────────────────────────────────────
+pub const intercept = @import("core/interceptor.zig").intercept;
 pub const paramInt = @import("core/pipe.zig").paramInt;
 pub const parseUUID = @import("core/pipe.zig").parseUUID;
 pub const parseBool = @import("core/pipe.zig").parseBool;
@@ -47,49 +86,11 @@ pub const validateBodyWith = @import("core/pipe.zig").validateBodyWith;
 pub const pipeParam = @import("core/pipe.zig").pipeParam;
 pub const queryInt = @import("core/pipe.zig").queryInt;
 pub const isValidUUID = @import("core/pipe.zig").isValidUUID;
-pub const validator = @import("validator/mod.zig");
-pub const schema = @import("validator/schema.zig");
 pub const validateBodySchema = @import("core/pipe.zig").validateBodySchema;
 pub const validateBodyWithSchema = @import("core/pipe.zig").validateBodyWithSchema;
 pub const validateQuerySchema = @import("core/pipe.zig").validateQuerySchema;
-pub const compression = @import("compression/mod.zig");
-pub const logging = @import("core/logging.zig");
-pub const cors = @import("cors/mod.zig");
-pub const CorsConfig = @import("cors/mod.zig").CorsConfig;
-pub const CorsOrigins = @import("cors/mod.zig").CorsOrigins;
-pub const OriginPredicate = @import("cors/mod.zig").OriginPredicate;
-pub const security = @import("security/mod.zig");
-pub const SecurityConfig = @import("security/mod.zig").SecurityConfig;
-pub const HelmetConfig = @import("security/mod.zig").HelmetConfig;
-pub const XssConfig = @import("security/mod.zig").XssConfig;
-pub const XssMode = @import("security/mod.zig").XssMode;
-pub const CspDirective = @import("security/mod.zig").CspDirective;
-pub const CspConfig = @import("security/mod.zig").CspConfig;
-pub const HstsConfig = @import("security/mod.zig").HstsConfig;
-pub const Cookies = @import("core/util.zig").Cookies;
-pub const CookieOptions = @import("core/util.zig").CookieOptions;
-pub const SameSite = @import("core/util.zig").SameSite;
-pub const parseCookies = @import("core/util.zig").parseCookies;
-pub const formatSetCookie = @import("core/util.zig").formatSetCookie;
-pub const signCookie = @import("core/util.zig").signCookie;
-pub const verifySignedCookie = @import("core/util.zig").verifySignedCookie;
-pub const StaticConfig = @import("static/mod.zig").StaticConfig;
-pub const DotfilePolicy = @import("static/mod.zig").DotfilePolicy;
-pub const staticHandle = @import("static/mod.zig").handle;
-pub const TemplateEngine = @import("template/mod.zig").TemplateEngine;
-pub const TemplateConfig = @import("template/mod.zig").TemplateConfig;
-pub const Logger = @import("core/logging.zig").Logger;
-pub const LoggerConfig = @import("core/logging.zig").LoggerConfig;
-pub const LogLevel = @import("core/logging.zig").LogLevel;
-pub const LogSink = @import("core/logging.zig").Sink;
-pub const UAParser = @import("tracker/ua_parser.zig");
-pub const ua_parser = @import("tracker/ua_parser.zig");
-pub const tracker = @import("tracker/mod.zig");
-pub const TrackerConfig = @import("tracker/mod.zig").TrackerConfig;
-pub const RequestSummary = @import("tracker/mod.zig").RequestSummary;
-pub const logRequestSummary = @import("tracker/mod.zig").logRequestSummary;
-pub const buildRequestSummary = @import("tracker/mod.zig").buildSummary;
 
+// ── Streaming ─────────────────────────────────────────────────────────────────
 pub const StreamWriter = @import("core/stream.zig").StreamWriter;
 pub const NdjsonStreamWriter = @import("core/stream.zig").NdjsonStreamWriter;
 pub const SseStreamWriter = @import("core/stream.zig").SseStreamWriter;
@@ -104,18 +105,6 @@ pub const CsvStreamConfig = @import("core/stream.zig").CsvStreamConfig;
 pub const FileStreamConfig = @import("core/response.zig").Response.FileStreamConfig;
 pub const parseRange = @import("core/stream.zig").parseRange;
 pub const ParsedRange = @import("core/stream.zig").ParsedRange;
-
-pub const tls = @import("tls/mod.zig");
-pub const TlsConfig = @import("tls/mod.zig").TlsConfig;
-pub const TlsContext = @import("tls/mod.zig").TlsContext;
-pub const TlsVersion = @import("tls/mod.zig").TlsVersion;
-pub const ClientAuth = @import("tls/mod.zig").ClientAuth;
-pub const CipherSuite = @import("tls/mod.zig").CipherSuite;
-pub const ClientCertInfo = @import("tls/mod.zig").ClientCertInfo;
-pub const RedirectHttpConfig = @import("tls/mod.zig").RedirectHttpConfig;
-
-pub const Plugin = @import("core/plugin.zig").Plugin;
-pub const makePlugin = @import("core/app.zig").makePlugin;
 
 pub fn init(allocator: std.mem.Allocator) App {
     return App.init(allocator);

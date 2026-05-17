@@ -38,6 +38,9 @@ pub fn defaultLogRequestFn(
     }, "request completed");
 }
 
+/// Function pointer type for response body compression.
+pub const CompressionFn = *const fn (*anyopaque, []const u8, *Response) bool;
+
 /// Function pointer type for TLS connection handling (set from app.tls() lazily).
 pub const TlsHandleFn = *const fn (std.mem.Allocator, net.Stream, *Router, ConnConfig, logging.Logger, *anyopaque) void;
 
@@ -185,7 +188,6 @@ pub fn listenAndServe(
         .address = address,
         .route_count = router.routeCount(),
         .middleware_count = router.mw.items.items.len,
-        .interceptor_count = router.global_interceptors.items.len,
         .compression_enabled = conn_config.compression_config != null,
         .tls_enabled = tls_runtime != null,
         .redirect_http_enabled = redirect_config != null,
@@ -339,173 +341,17 @@ fn handlePlainConnection(
     processRequests(allocator, &http_server, router, conn_config, logger, false, null, null);
 }
 
-/// Only analyzed when app.tls() is called — TlsMod only compiles when TLS is used.
-pub fn handleTlsConnection(
-    allocator: std.mem.Allocator,
-    stream: net.Stream,
-    router: *Router,
-    conn_config: ConnConfig,
-    logger: logging.Logger,
-    tls_runtime_ptr: *anyopaque,
-) void {
-    const TlsMod = @import("../tls/mod.zig");
-    const tls_runtime: *TlsMod.TlsRuntime = @ptrCast(@alignCast(tls_runtime_ptr));
-
-    var threaded = std.Io.Threaded.init(allocator, .{});
-    defer stream.close(threaded.io());
-
-    const io = threaded.io();
-
-    var read_buf: [std.crypto.tls.max_ciphertext_record_len]u8 = undefined;
-    var write_buf: [std.crypto.tls.max_ciphertext_record_len]u8 = undefined;
-
-    var net_reader = stream.reader(io, &read_buf);
-    var net_writer = stream.writer(io, &write_buf);
-
-    var lease = tls_runtime.acquire() orelse {
-        logger.errorFields(.{
-            .component = "listener",
-            .event = "tls_context_missing",
-        }, "TLS context missing");
-        return;
-    };
-    defer lease.release();
-
-    const tls_context = lease.context();
-
-    var entropy: [TlsMod.server_entropy_len]u8 = undefined;
-    platform.fillRandomBytes(&entropy);
-
-    var tls_server = TlsMod.server.init(
-        &net_reader.interface,
-        &net_writer.interface,
-        .{
-            .tls_context = tls_context,
-            .write_buffer = &write_buf,
-            .read_buffer = &read_buf,
-            .entropy = &entropy,
-            .realtime_now = std.Io.Timestamp.now(io, .real),
-        },
-    ) catch |e| {
-        logger.errorFields(.{
-            .component = "listener",
-            .event = "tls_handshake_failed",
-            .@"error" = @errorName(e),
-        }, "TLS handshake failed");
-        return;
-    };
-    defer tls_server.end() catch {};
-
-    var tls_reader = tls_server.reader;
-    var tls_writer = tls_server.writer;
-
-    var http_server = http.Server.init(&tls_reader, &tls_writer);
-
-    const sni_val = tls_server.sni_hostname orelse "unknown";
-    processRequests(allocator, &http_server, router, conn_config, logger, true, sni_val, null);
-}
-
-// ---------------------------------------------------------------------------
-// Redirect listener (runs in its own thread)
-// ---------------------------------------------------------------------------
-
-/// Only analyzed when app.redirectHttp() is called — TlsMod only compiles when redirect+TLS is used.
-pub fn runRedirectListenerFn(
-    allocator: std.mem.Allocator,
-    owned_address: []const u8,
-    https_port: u16,
-    router: *Router,
-    conn_config: ConnConfig,
-    logger: logging.Logger,
-    redirect_config_ptr: *anyopaque,
-) void {
-    const TlsMod = @import("../tls/mod.zig");
-    const redirect_http: *const TlsMod.RedirectHttpConfig = @ptrCast(@alignCast(redirect_config_ptr));
-
-    defer allocator.free(owned_address);
-
-    var threaded = std.Io.Threaded.init(allocator, .{});
-    const io = threaded.io();
-
-    var ip_addr = net.IpAddress.parseLiteral(owned_address) catch |e| {
-        logger.errorFields(.{
-            .component = "listener",
-            .event = "redirect_address_parse_failed",
-            .@"error" = @errorName(e),
-            .address = owned_address,
-        }, "redirect address parse failed");
-        return;
-    };
-    ip_addr.setPort(redirect_http.port);
-
-    var server = ip_addr.listen(io, .{}) catch |e| {
-        logger.errorFields(.{
-            .component = "listener",
-            .event = "redirect_listener_failed",
-            .@"error" = @errorName(e),
-            .address = owned_address,
-            .port = redirect_http.port,
-        }, "redirect listener failed");
-        return;
-    };
-    defer server.deinit(io);
-
-    logger.infoFields(.{
-        .component = "listener",
-        .event = "redirect_listener_listening",
-        .address = owned_address,
-        .http_port = redirect_http.port,
-        .https_port = redirect_http.to orelse https_port,
-    }, "redirect listener listening");
-
-    const shouldRedirectFn = struct {
-        fn f(ptr: *anyopaque, path: []const u8) bool {
-            const TM = @import("../tls/mod.zig");
-            return (@as(*const TM.RedirectHttpConfig, @ptrCast(@alignCast(ptr)))).shouldRedirect(path);
-        }
-    }.f;
-
-    while (true) {
-        const stream = server.accept(io) catch |e| {
-            logger.errorFields(.{
-                .component = "listener",
-                .event = "redirect_accept_failed",
-                .@"error" = @errorName(e),
-            }, "redirect accept failed");
-            continue;
-        };
-
-        _ = std.Thread.spawn(.{}, handleRedirectConnection, .{
-            allocator,
-            stream,
-            router,
-            conn_config,
-            logger,
-            RedirectPlan{
-                .should_redirect_fn = shouldRedirectFn,
-                .config_ptr = redirect_config_ptr,
-                .https_port = redirect_http.to orelse https_port,
-                .fallback_host = owned_address,
-            },
-        }) catch |e| {
-            logger.errorFields(.{
-                .component = "listener",
-                .event = "redirect_thread_spawn_failed",
-                .@"error" = @errorName(e),
-            }, "redirect thread spawn failed");
-            stream.close(io);
-        };
-    }
-}
-
-const RedirectPlan = struct {
+/// Redirect plan — passed to processRequests when handling HTTP→HTTPS redirect connections.
+/// Exposed as pub so ziez-tls plugin can construct and use it via handleRedirectConnection.
+pub const RedirectPlan = struct {
     should_redirect_fn: *const fn (*anyopaque, []const u8) bool,
     config_ptr: *anyopaque,
     https_port: u16,
     fallback_host: []const u8,
 };
 
-fn handleRedirectConnection(
+/// Exposed as pub so ziez-tls plugin can spawn this for each redirect connection.
+pub fn handleRedirectConnection(
     allocator: std.mem.Allocator,
     stream: net.Stream,
     router: *Router,

@@ -16,7 +16,6 @@ pub const Response = struct {
     error_message: ?[]const u8 = null,
     compression_config: ?*anyopaque = null,
     compress_fn: ?*const fn (*anyopaque, []const u8, *Response) bool = null,
-    template_engine: ?*anyopaque = null,
     logger: ?logging.Logger = null,
     request_id: []const u8 = "",
     streaming: bool = false,
@@ -41,7 +40,6 @@ pub const Response = struct {
         self.headers_len = 0;
         self.sent = false;
         self.server_request = null;
-        self.template_engine = null;
         self.compress_fn = null;
         self.compression_config = null;
         self.logger = null;
@@ -216,24 +214,6 @@ pub const Response = struct {
     pub fn html(self: *Response, data: []const u8) void {
         _ = self.set("content-type", "text/html; charset=utf-8");
         self.sendBody(data);
-    }
-
-    pub fn render(self: *Response, view: []const u8, context: anytype) void {
-        const TemplateMod = @import("../template/mod.zig");
-        const engine: *TemplateMod.TemplateEngine = @ptrCast(@alignCast(self.template_engine orelse {
-            self.logMessage(.@"error", "response", "template_engine_missing", "render failed");
-            self.status(500).sendBody("{\"error\":\"template engine not configured\"}");
-            return;
-        }));
-
-        const result = engine.renderAlloc(self.allocator, view, context) catch |e| {
-            self.logError("response", "render_failed", e);
-            self.status(500).sendBody("{\"error\":\"template rendering failed\"}");
-            return;
-        };
-        defer self.allocator.free(result);
-
-        self.html(result);
     }
 
     pub fn redirect(self: *Response, url: []const u8) void {
