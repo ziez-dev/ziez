@@ -1,7 +1,7 @@
 .{
     .fingerprint = 0xca9a688b1ab47dcc,
     .name = .ziez,
-    .version = "0.1.0",
+    .version = "0.0.1",
     .minimum_zig_version = "0.16.0",
     .dependencies = .{},
     .paths = .{
