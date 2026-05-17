@@ -25,9 +25,6 @@ pub fn main() !void {
     std.debug.print("  API_VERSION: v{d}\n", .{api_version});
     std.debug.print("  DATABASE_URL: {s}\n", .{if (db_url.len > 0) db_url else "(not set)"});
 
-    var threaded = std.Io.Threaded.init(allocator, .{});
-    const io = threaded.io();
-
     var app = ziez.init(allocator);
     defer app.deinit();
 
@@ -54,5 +51,5 @@ pub fn main() !void {
     var addr_buf: [64]u8 = undefined;
     const address = std.fmt.bufPrint(&addr_buf, "{s}:{d}", .{ host, port }) catch unreachable;
     std.debug.print("Env example listening on {s}\n", .{address});
-    try app.listen(io, address);
+    try app.listen(address);
 }

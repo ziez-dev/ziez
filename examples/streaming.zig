@@ -8,9 +8,6 @@ var sse_counter: u32 = 0;
 pub fn main() !void {
     const allocator = std.heap.smp_allocator;
 
-    var threaded = std.Io.Threaded.init(allocator, .{});
-    const io = threaded.io();
-
     var app = ziez.init(allocator);
     defer app.deinit();
 
@@ -119,7 +116,7 @@ pub fn main() !void {
     std.debug.print("  curl -N http://localhost:3000/stream/json-array\n", .{});
     std.debug.print("  curl -N http://localhost:3000/stream/text\n", .{});
 
-    app.listen(io, "0.0.0.0:3000") catch |e| {
+    app.listen("0.0.0.0:3000") catch |e| {
         std.debug.print("server error: {s}\n", .{@errorName(e)});
     };
 }

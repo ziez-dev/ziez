@@ -30,9 +30,6 @@ const JsonSink = struct {
 pub fn main() !void {
     const allocator = std.heap.smp_allocator;
 
-    var threaded = std.Io.Threaded.init(allocator, .{});
-    const io = threaded.io();
-
     var app = ziez.init(allocator);
     defer app.deinit();
 
@@ -86,5 +83,5 @@ pub fn main() !void {
     std.debug.print("  GET /debug   — 200 debug log\n", .{});
     std.debug.print("  GET /warn    — 429 warn log\n", .{});
     std.debug.print("  GET /fail    — 500 error log\n", .{});
-    try app.listen(io, "0.0.0.0:3000");
+    try app.listen("0.0.0.0:3000");
 }

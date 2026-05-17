@@ -30,9 +30,6 @@ const SearchQuery = struct {
 pub fn main() !void {
     const allocator = std.heap.smp_allocator;
 
-    var threaded = std.Io.Threaded.init(allocator, .{});
-    const io = threaded.io();
-
     var app = ziez.init(allocator);
     defer app.deinit();
 
@@ -133,5 +130,5 @@ pub fn main() !void {
     std.debug.print("  GET  /search?q=x&page=1  validateQuerySchema\n", .{});
     std.debug.print("  POST /products        validateBodyWithSchema (inline rules)\n", .{});
     std.debug.print("  GET  /validate?email=x&uuid=y&url=z  standalone validators\n", .{});
-    try app.listen(io, "0.0.0.0:3000");
+    try app.listen("0.0.0.0:3000");
 }
