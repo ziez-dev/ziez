@@ -134,10 +134,8 @@ jobs:
           TAR_URL="https://github.com/ziez-dev/ziez/archive/refs/tags/${TAG}.tar.gz"
           ZIEZ_HASH=$(zig fetch --global-cache-dir /tmp/zig-cache "${TAR_URL}")
 
-          UA_PARSER_TAG="${TAG}"
-          UA_TAR="https://github.com/ziez-dev/ua-parser/archive/refs/tags/${UA_PARSER_TAG}.tar.gz"
-          # Fallback to main if tag doesn't exist yet
-          UA_HASH=$(zig fetch --global-cache-dir /tmp/zig-cache "${UA_TAR}" 2>/dev/null || zig fetch --global-cache-dir /tmp/zig-cache "https://github.com/ziez-dev/ua-parser/archive/refs/heads/main.tar.gz")
+          UA_TAR="https://github.com/ziez-dev/ua-parser/archive/refs/tags/${TAG}.tar.gz"
+          UA_HASH=$(zig fetch --global-cache-dir /tmp/zig-cache "${UA_TAR}")
 
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
