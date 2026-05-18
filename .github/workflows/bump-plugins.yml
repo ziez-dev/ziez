@@ -36,7 +36,7 @@ jobs:
           token: ${{ secrets.ZIEZ_BOT_PAT }}
 
       - name: Compute new ziez hash
-        id: hash
+        id: vars
         run: |
           TAG="${GITHUB_REF_NAME}"
           VERSION="${TAG#v}"
@@ -49,26 +49,32 @@ jobs:
 
       - name: Update build.zig.zon
         run: |
-          NEW_HASH="${{ steps.hash.outputs.hash }}"
-          TAR_URL="${{ steps.hash.outputs.url }}"
+          VERSION="${{ steps.vars.outputs.version }}"
+          NEW_HASH="${{ steps.vars.outputs.hash }}"
+          TAR_URL="${{ steps.vars.outputs.url }}"
+
+          # Bump plugin version
+          sed -i "s|\.version = \"[0-9]\+\.[0-9]\+\.[0-9]\+\"|\.version = \"${VERSION}\"|g" build.zig.zon
+
+          # Update ziez dependency URL and hash
           sed -i "s|https://github.com/ziez-dev/ziez/archive/refs/tags/v[0-9]\+\.[0-9]\+\.[0-9]\+\.tar\.gz|${TAR_URL}|g" build.zig.zon
           sed -i "s|https://github.com/ziez-dev/ziez/archive/refs/heads/main\.tar\.gz|${TAR_URL}|g" build.zig.zon
           sed -i "s|ziez-[0-9]\+\.[0-9]\+\.[0-9]\+-[a-zA-Z0-9_-]\+|${NEW_HASH}|g" build.zig.zon
 
-      - name: Update README Quick Start
-        run: |
-          sed -i '/var threaded = std\.Io\.Threaded\.init/d' README.md
-          sed -i '/const io = threaded\.io()/d' README.md
-          sed -i 's/app\.listen(io,/app.listen(/g' README.md
+          echo "--- build.zig.zon ---"
+          cat build.zig.zon
 
-      - name: Commit and push
+      - name: Commit, push, and tag
         run: |
+          TAG="${{ steps.vars.outputs.tag }}"
           git config user.name "ziez-bot"
           git config user.email "bot@ziez.dev"
           git add -A
           git diff --cached --quiet && echo "No changes to commit" && exit 0
-          git commit -m "chore: bump ziez to ${{ steps.hash.outputs.tag }}"
+          git commit -m "chore: bump ziez to ${TAG}"
           git push
+          git tag "${TAG}"
+          git push origin "${TAG}"
 
   bump-ua-parser:
     name: Update ua-parser
@@ -81,20 +87,28 @@ jobs:
           repository: ziez-dev/ua-parser
           token: ${{ secrets.ZIEZ_BOT_PAT }}
 
-      - name: Update README Quick Start
+      - name: Update build.zig.zon version
+        id: vars
         run: |
-          sed -i '/var threaded = std\.Io\.Threaded\.init/d' README.md
-          sed -i '/const io = threaded\.io()/d' README.md
-          sed -i 's/app\.listen(io,/app.listen(/g' README.md
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="${TAG#v}"
+          sed -i "s|\.version = \"[0-9]\+\.[0-9]\+\.[0-9]\+\"|\.version = \"${VERSION}\"|g" build.zig.zon
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
 
-      - name: Commit and push
+          echo "--- build.zig.zon ---"
+          cat build.zig.zon
+
+      - name: Commit, push, and tag
         run: |
+          TAG="${{ steps.vars.outputs.tag }}"
           git config user.name "ziez-bot"
           git config user.email "bot@ziez.dev"
           git add -A
           git diff --cached --quiet && echo "No changes to commit" && exit 0
-          git commit -m "chore: update README code examples"
+          git commit -m "chore: bump version to ${TAG}"
           git push
+          git tag "${TAG}"
+          git push origin "${TAG}"
 
   bump-tracker:
     name: Update tracker
@@ -112,41 +126,56 @@ jobs:
           repository: ziez-dev/tracker
           token: ${{ secrets.ZIEZ_BOT_PAT }}
 
-      - name: Compute new ziez hash
-        id: hash
+      - name: Compute hashes
+        id: vars
         run: |
           TAG="${GITHUB_REF_NAME}"
+          VERSION="${TAG#v}"
           TAR_URL="https://github.com/ziez-dev/ziez/archive/refs/tags/${TAG}.tar.gz"
-          NEW_HASH=$(zig fetch --global-cache-dir /tmp/zig-cache "${TAR_URL}")
+          ZIEZ_HASH=$(zig fetch --global-cache-dir /tmp/zig-cache "${TAR_URL}")
+
+          UA_PARSER_TAG="${TAG}"
+          UA_TAR="https://github.com/ziez-dev/ua-parser/archive/refs/tags/${UA_PARSER_TAG}.tar.gz"
+          # Fallback to main if tag doesn't exist yet
+          UA_HASH=$(zig fetch --global-cache-dir /tmp/zig-cache "${UA_TAR}" 2>/dev/null || zig fetch --global-cache-dir /tmp/zig-cache "https://github.com/ziez-dev/ua-parser/archive/refs/heads/main.tar.gz")
+
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
-          echo "hash=${NEW_HASH}" >> "$GITHUB_OUTPUT"
-          echo "url=${TAR_URL}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "ziez_hash=${ZIEZ_HASH}" >> "$GITHUB_OUTPUT"
+          echo "ziez_url=${TAR_URL}" >> "$GITHUB_OUTPUT"
+          echo "ua_hash=${UA_HASH}" >> "$GITHUB_OUTPUT"
+          echo "ua_tar=${UA_TAR}" >> "$GITHUB_OUTPUT"
 
-      - name: Update ziez dep in build.zig.zon
+      - name: Update build.zig.zon
         run: |
-          NEW_HASH="${{ steps.hash.outputs.hash }}"
-          TAR_URL="${{ steps.hash.outputs.url }}"
-          sed -i "s|https://github.com/ziez-dev/ziez/archive/refs/tags/v[0-9]\+\.[0-9]\+\.[0-9]\+\.tar\.gz|${TAR_URL}|g" build.zig.zon
-          sed -i "s|ziez-[0-9]\+\.[0-9]\+\.[0-9]\+-[a-zA-Z0-9_-]\+|${NEW_HASH}|g" build.zig.zon
+          VERSION="${{ steps.vars.outputs.version }}"
+          ZIEZ_HASH="${{ steps.vars.outputs.ziez_hash }}"
+          ZIEZ_URL="${{ steps.vars.outputs.ziez_url }}"
+          UA_HASH="${{ steps.vars.outputs.ua_hash }}"
+          UA_TAR="${{ steps.vars.outputs.ua_tar }}"
 
-      - name: Get latest ua-parser hash
-        run: |
-          UA_TAR="https://github.com/ziez-dev/ua-parser/archive/refs/heads/main.tar.gz"
-          UA_HASH=$(zig fetch --global-cache-dir /tmp/zig-cache "${UA_TAR}")
+          # Bump plugin version
+          sed -i "s|\.version = \"[0-9]\+\.[0-9]\+\.[0-9]\+\"|\.version = \"${VERSION}\"|g" build.zig.zon
+
+          # Update ziez dep
+          sed -i "s|https://github.com/ziez-dev/ziez/archive/refs/tags/v[0-9]\+\.[0-9]\+\.[0-9]\+\.tar\.gz|${ZIEZ_URL}|g" build.zig.zon
+          sed -i "s|ziez-[0-9]\+\.[0-9]\+\.[0-9]\+-[a-zA-Z0-9_-]\+|${ZIEZ_HASH}|g" build.zig.zon
+
+          # Update ua-parser dep
           sed -i "s|https://github.com/ziez-dev/ua-parser/archive/refs/tags/v[0-9]\+\.[0-9]\+\.[0-9]\+\.tar\.gz|${UA_TAR}|g" build.zig.zon
           sed -i "s|ziez_ua_parser-[0-9]\+\.[0-9]\+\.[0-9]\+-[a-zA-Z0-9_-]\+|${UA_HASH}|g" build.zig.zon
 
-      - name: Update README Quick Start
-        run: |
-          sed -i '/var threaded = std\.Io\.Threaded\.init/d' README.md
-          sed -i '/const io = threaded\.io()/d' README.md
-          sed -i 's/app\.listen(io,/app.listen(/g' README.md
+          echo "--- build.zig.zon ---"
+          cat build.zig.zon
 
-      - name: Commit and push
+      - name: Commit, push, and tag
         run: |
+          TAG="${{ steps.vars.outputs.tag }}"
           git config user.name "ziez-bot"
           git config user.email "bot@ziez.dev"
           git add -A
           git diff --cached --quiet && echo "No changes to commit" && exit 0
-          git commit -m "chore: bump ziez to ${{ steps.hash.outputs.tag }} and update ua-parser"
+          git commit -m "chore: bump ziez to ${TAG} and update ua-parser"
           git push
+          git tag "${TAG}"
+          git push origin "${TAG}"
