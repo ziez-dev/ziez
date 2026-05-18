@@ -81,9 +81,6 @@ const ziez = @import("ziez");
 pub fn main() !void {
     const allocator = std.heap.smp_allocator;
 
-    var threaded = std.Io.Threaded.init(allocator, .{});
-    const io = threaded.io();
-
     var app = ziez.init(allocator);
     defer app.deinit();
 
@@ -93,7 +90,7 @@ pub fn main() !void {
         }
     }.handler);
 
-    try app.listen(io, "0.0.0.0:3000");
+    try app.listen("0.0.0.0:3000");
 }
 ```
 

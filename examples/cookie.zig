@@ -6,9 +6,6 @@ const SESSION_SECRET = "super-secret-hmac-key-minimum-32-characters!!";
 pub fn main() !void {
     const allocator = std.heap.smp_allocator;
 
-    var threaded = std.Io.Threaded.init(allocator, .{});
-    const io = threaded.io();
-
     var app = ziez.init(allocator);
     defer app.deinit();
 
@@ -92,5 +89,5 @@ pub fn main() !void {
     std.debug.print("  GET  /theme?set=dark\n", .{});
     std.debug.print("  GET  /prefs    Cookie: theme=dark\n", .{});
     std.debug.print("  POST /logout\n", .{});
-    try app.listen(io, "0.0.0.0:3000");
+    try app.listen("0.0.0.0:3000");
 }

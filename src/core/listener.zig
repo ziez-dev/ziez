@@ -149,7 +149,6 @@ const WorkerContext = struct {
 
 pub fn listenAndServe(
     allocator: std.mem.Allocator,
-    io: std.Io,
     address: []const u8,
     router: *Router,
     conn_config: ConnConfig,
@@ -159,6 +158,9 @@ pub fn listenAndServe(
     redirect_config: ?*anyopaque,
     run_redirect: ?RedirectRunFn,
 ) !void {
+    var threaded = std.Io.Threaded.init(allocator, .{});
+    const io = threaded.io();
+
     const ip_addr = try net.IpAddress.parseLiteral(address);
     var server = try ip_addr.listen(io, .{});
     defer server.deinit(io);

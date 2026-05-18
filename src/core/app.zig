@@ -65,7 +65,7 @@ pub const App = struct {
         self.router.deinit();
     }
 
-    pub fn listen(self: *App, io: std.Io, address: []const u8) !void {
+    pub fn listen(self: *App, address: []const u8) !void {
         if (self.tls_config_ptr) |cfg_ptr| {
             if (self.tls_runtime == null) {
                 if (self.tls_create_fn) |create_fn| {
@@ -78,7 +78,6 @@ pub const App = struct {
         }
         try listener.listenAndServe(
             self.allocator,
-            io,
             address,
             &self.router,
             self.conn_config,
